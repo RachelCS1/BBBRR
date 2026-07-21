@@ -35,8 +35,8 @@ class ReferenceSettings:
     lp_cutoff_hz: float = 1.0       # "LP Cutoff (Hz)"  (paramLP)
 
     # ---- Breath rate gate ----
-    min_rate_bpm: float = 4.0       # "Min Rate (bpm)"  (paramMinB) -> max breath duration
-    max_rate_bpm: float = 40.0      # "Max Rate (bpm)"  (paramMaxB) -> min breath duration
+    min_rate_bpm: float = 3.0       # "Min Rate (bpm)"  (paramMinB) -> max breath duration
+    max_rate_bpm: float = 50.0      # "Max Rate (bpm)"  (paramMaxB) -> min breath duration
 
     # ---- Movement / activity gating ----
     move_thresh_gs: float = 0.15    # "Move Thresh (g/s)"  (paramMoveThresh, CSV/Poly mode)
@@ -68,8 +68,8 @@ class ReferenceSettings:
     fft_len_sec: float = 100.0      # "FFT length (s)"  (paramFFTLen)
     spec_min_hz: float = 0.08       # "Spec min freq (Hz)"  (paramSpecMin)
     spec_max_hz: float = 1.0        # "Spec max freq (Hz)"  (paramSpecMax)
-    spec_top_db: float = 5.0        # "top dB in spectogram"  (paramTopDB)
-    spec_high_seg_sec: float = 60.0 # "highest value segment (s)"  (paramHighSeg)
+    spec_top_db: float = 100.0        # "top dB in spectogram"  (paramTopDB)
+    spec_high_seg_sec: float = 32.0 # "highest value segment (s)"  (paramHighSeg)
 
     # ---- Source formats ----
     csv_airflow_cols: tuple = ("time_s", "Nasal Pressure")   # "200 Hz Airflow CSV" columns
@@ -159,7 +159,7 @@ class PPGSettings:
     rr_band_low_hz: float = 0.1     # "HP Cutoff RR (Hz)"  (paramHP_RR)
     rr_band_high_hz: float = 0.7    # "LP Cutoff RR (Hz)"  (paramLP_RR)
     rr_filter_order: int = 2        # "Filter Order"  (paramFilterOrder, shared)
-    breath_start_prominence: float = 0.10  # "BS Prominence (%)"  (paramBSProm; UI is 10 %, stored as 0.10)
+    breath_start_prominence: float = 0.001  # "BS Prominence (%)"  (paramBSProm; UI is 10 %, stored as 0.001)
     rr_spec_window_sec: float = 32.0       # "FFT Length (s)"  (paramFftLength)
     rr_spec_low_hz: float = 0.1            # not in UI: ridge search-band low
     rr_spec_high_hz: float = 0.1           # "Spect Min Freq (Hz)"  (paramSpectMinFreq)
@@ -167,9 +167,9 @@ class PPGSettings:
     # ---- BW (baseline-wander) parameter — its OWN band on the raw signal ----
     # RSA/RIIV/AUC use rr_band_* above (per-beat series). BW band-passes the raw
     # channel directly, so it gets independent cutoffs — tune these separately.
-    bw_band_low_hz: float = 0.05    # BW high-pass (raw signal)
-    bw_band_high_hz: float = 1.0   # BW low-pass (raw signal)
-    bw_filter_order: int = 4        # BW filter order
+    bw_band_low_hz: float = 0.1    # BW high-pass (raw signal)
+    bw_band_high_hz: float = 0.7   # BW low-pass (raw signal)
+    bw_filter_order: int = 2        # BW filter order
 
     # ---- SpO2 (optional stretch; ratio-of-ratios) ----
     spo2_R_clamp: tuple = (0.3, 2.0)             # not in UI: clamp R
