@@ -141,9 +141,9 @@ def main(argv=None):
         if ref is not None:
             viz.plot_reference(ref)
         if ppg_results:
-            viz.plot_ppg_overview(ppg_results)
             for ch, res in ppg_results.items():
                 viz.plot_ppg_channel(res)
+                viz.plot_ppg_spectrograms(res)   # 4 per-parameter spectrograms
         if cmp is not None:
             viz.plot_comparison(cmp, top_n=COMPARE.top_n)
         print("\nOpening figures — close the windows to exit.")

@@ -74,9 +74,9 @@ def plot_reference(ref, title="Reference (REMbo / Poly) — airflow RR"):
 
 
 def plot_ppg_channel(res, title=None):
-    """One PPG channel: the four respiration params, each with its RR trend."""
+    """One PPG channel: the four respiration-parameter envelopes with breath-starts."""
     params = [p for p in ("RSA", "RIIV", "AUC", "LP") if p in res.params]
-    n = len(params) + 1
+    n = len(params)
     fig, axes = plt.subplots(n, 1, figsize=(13, 2.1 * n), sharex=True)
     if n == 1:
         axes = [axes]
@@ -98,16 +98,47 @@ def plot_ppg_channel(res, title=None):
                      fontsize=9)
         ax.legend(loc="upper right", fontsize=8)
 
-    # spectral ridge panel
-    ax = axes[-1]
-    if res.ridge_rr is not None and np.isfinite(res.ridge_rr).any():
-        ax.plot(res.ridge_time, res.ridge_rr, color=_PARAM_COLORS["Ridge"], lw=1.0)
-        ax.set_title(f"Spectral ridge: mean RR = {np.nanmean(res.ridge_rr):.1f} bpm", fontsize=9)
-    else:
-        ax.text(0.5, 0.5, "Ridge unavailable (series too short)", transform=ax.transAxes,
-                ha="center", va="center", color="#888")
-    ax.set_ylabel("Ridge RR")
-    ax.set_xlabel("Time (s)")
+    axes[-1].set_xlabel("Time (s)")
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    return fig
+
+
+def plot_ppg_spectrograms(res, title=None, max_bpm=54):
+    """One PPG channel: the STFT spectrogram of EACH of the four RR parameters
+    (RSA/RIIV/AUC/LP), with the extracted respiration ridge overlaid.
+
+    Mirrors the HTML's RR-envelope spectrogram, but per parameter — four panels,
+    frequency (bpm) on the y-axis, power (dB) as colour, time on the x-axis."""
+    params = [p for p in ("RSA", "RIIV", "AUC", "LP")
+              if p in res.params and res.params[p].spect is not None]
+    if not params:
+        return None
+    n = len(params)
+    fig, axes = plt.subplots(n, 1, figsize=(13, 2.5 * n), sharex=True)
+    if n == 1:
+        axes = [axes]
+    fig.suptitle(title or f"Watch PPG — {res.channel} — per-parameter spectrograms",
+                 fontsize=13, fontweight="bold")
+    for ax, pname in zip(axes, params):
+        pr = res.params[pname]
+        sp = pr.spect
+        bpm = sp["freqs"] * 60.0
+        m = bpm <= max_bpm
+        pcm = ax.pcolormesh(sp["times"], bpm[m], sp["power_db"][m, :],
+                            shading="auto", cmap="turbo")
+        if pr.ridge_rr is not None and np.isfinite(pr.ridge_rr).any():
+            ax.plot(pr.ridge_time, pr.ridge_rr, color="#ffffff", lw=1.1, alpha=0.85,
+                    label="ridge")
+            ax.legend(loc="upper right", fontsize=7)
+            mean_ridge = np.nanmean(pr.ridge_rr)
+        else:
+            mean_ridge = float("nan")
+        ax.set_ylabel(f"{pname}\n(bpm)")
+        ax.set_ylim(0, max_bpm)
+        ax.set_title(f"{pname} spectrogram — ridge mean RR = {mean_ridge:.1f} bpm",
+                     fontsize=9, loc="left")
+        fig.colorbar(pcm, ax=ax, pad=0.01, label="dB")
+    axes[-1].set_xlabel("Time (s)")
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     return fig
 

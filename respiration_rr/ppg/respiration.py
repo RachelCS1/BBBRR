@@ -2,7 +2,8 @@
 PPG respiration estimation — the FOUR parameters + spectral ridge.
 
 For each PPG-type channel (Green, Red, IR, Artifact) the tool derives respiration
-rate from four independent per-beat modulation series, plus a spectral ridge:
+rate from four independent per-beat modulation series. Each param also gets its
+own STFT spectrogram + respiration ridge (four spectrograms per channel):
 
   1. RSA  — RR-interval (ms) between consecutive systolic starts   (RSA / RIFV)
   2. RIIV — per-beat max-height amplitude                          (RIIV / RIAV)
@@ -109,6 +110,9 @@ class RRParam:
     bs_times: np.ndarray            # breath-start times
     rr_time: np.ndarray             # per-breath RR timestamps
     rr_bpm: np.ndarray              # per-breath RR values
+    spect: dict = None              # STFT spectrogram of this param's envelope
+    ridge_time: np.ndarray = None   # per-param ridge: dominant-RR timestamps
+    ridge_rr: np.ndarray = None     # per-param ridge: dominant RR (bpm) over time
 
 
 @dataclass
@@ -209,16 +213,17 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
                            env_x=t, env_y=lp_trace,
                            bs_times=bs_lp_t, rr_time=lp_rr_t, rr_bpm=lp_rr)
 
-    # ---- Spectral ridge (on the RSA envelope; the "most direct" read) ----
+    # ---- Per-parameter spectrogram + ridge (one STFT per RR parameter) ----
+    # Each param's respiration-band envelope gets its own STFT so the dominant
+    # respiration frequency can be tracked over time (4 spectrograms per channel).
     ridge_t = ridge_v = None
     if compute_ridge:
-        env = params["RSA"].env_y
-        if env.size > int(cfg.rr_spec_window_sec * cfg.rr_resample_fs):
-            spect = compute_spectrogram(env - env.mean(), cfg.rr_resample_fs,
-                                        cfg.rr_spec_window_sec, cfg.rr_band_high_hz + 0.2)
-            ridge_t, ridge_v = ridge_rr(spect, cfg.rr_spec_low_hz, cfg.rr_spec_high_hz)
-            if ridge_t is not None:
-                ridge_t = ridge_t + params["RSA"].env_x[0]
+        for p in params.values():
+            _add_param_spectrogram(p, cfg)
+        # channel-level ridge stays the RSA read for backward compatibility
+        rsa = params.get("RSA")
+        if rsa is not None:
+            ridge_t, ridge_v = rsa.ridge_time, rsa.ridge_rr
 
     return PPGChannelResult(
         channel=channel, fs=fs, filtered=bp, bc=bc,
@@ -235,6 +240,41 @@ def _make_param(name, x, y, cfg, prom):
     rr_t, rr = _rr_from_starts(bs_t)
     return RRParam(name, series_x=np.asarray(x), series_y=np.asarray(y),
                    env_x=env_x, env_y=env_y, bs_times=bs_t, rr_time=rr_t, rr_bpm=rr)
+
+
+def _add_param_spectrogram(p, cfg):
+    """Attach an STFT spectrogram + respiration ridge to one RRParam, in place.
+
+    RSA/RIIV/AUC envelopes already live on the 10 Hz RR grid. LP is a full-rate
+    band-passed trace, so it is resampled onto that same grid first for a
+    comparable spectrogram. The ridge search spans the respiration band
+    (rr_band_low_hz..rr_band_high_hz) — not the degenerate rr_spec_* pair.
+    """
+    env_x = np.asarray(p.env_x, np.float64)
+    env_y = np.asarray(p.env_y, np.float64)
+    if env_x.size < 4:
+        return
+    spec_fs = cfg.rr_resample_fs
+    if p.name == "LP":                       # full-rate trace -> 10 Hz RR grid
+        grid = np.arange(env_x[0], env_x[-1], 1.0 / spec_fs)
+        sig = np.interp(grid, env_x, env_y)
+    else:
+        sig = env_y
+    t_off = env_x[0]
+    if sig.size <= int(cfg.rr_spec_window_sec * spec_fs):
+        return
+    spect = compute_spectrogram(sig - sig.mean(), spec_fs,
+                                cfg.rr_spec_window_sec, cfg.rr_band_high_hz + 0.2)
+    if spect is None:
+        return
+    rt, rv = ridge_rr(spect, cfg.rr_band_low_hz, cfg.rr_band_high_hz)
+    spect = dict(spect)
+    spect["times"] = spect["times"] + t_off
+    if rt is not None:
+        rt = rt + t_off
+    p.spect = spect
+    p.ridge_time = rt
+    p.ridge_rr = rv
 
 
 def analyze_ppg(channels, t, fs, cfg=PPG, which=("Green", "Red", "IR", "Artifact"),
