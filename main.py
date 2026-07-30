@@ -35,7 +35,7 @@ import numpy as np
 
 from respiration_rr.settings import REFERENCE, PPG, COMPARE
 from respiration_rr.io.edf_reader import EDFReader
-from respiration_rr.io.csv_reader import read_watch_csv
+from respiration_rr.io.csv_reader import read_watch_auto
 from respiration_rr.reference.airflow import analyze_reference
 from respiration_rr.ppg.preprocess import prepare_watch
 from respiration_rr.ppg.respiration import analyze_ppg
@@ -79,7 +79,7 @@ def run_reference(edf_path):
 def run_ppg(csv_path):
     """Watch PPG analysis -> dict of PPGChannelResult."""
     print(f"\n[Watch PPG]  {os.path.basename(csv_path)}")
-    watch = read_watch_csv(csv_path)
+    watch = read_watch_auto(csv_path)          # real-time (rt_flow) or monitor CSV
     sig = prepare_watch(watch)
     results = analyze_ppg(sig.channels, sig.time, sig.fs, move_regions=sig.move_regions)
     print(f"  {watch['fs']:.0f} Hz -> {PPG.target_fs:.0f} Hz, {sig.time[-1]-sig.time[0]:.0f}s | "

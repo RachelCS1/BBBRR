@@ -36,7 +36,7 @@ except Exception:
     pass
 
 from respiration_rr.settings import PPG
-from respiration_rr.io.csv_reader import read_watch_csv
+from respiration_rr.io.csv_reader import read_watch_auto
 from respiration_rr.ppg.preprocess_stages import (
     compute_channel_stages, compute_beat_stages, compute_movement_stage,
 )
@@ -83,7 +83,7 @@ def main(argv=None):
         ap.error("No watch CSV found. Pass --recording DIR or --watch FILE.")
 
     print(f"[Watch preprocessing]  {os.path.basename(csv_path)}")
-    watch = read_watch_csv(csv_path)
+    watch = read_watch_auto(csv_path)          # real-time (rt_flow) or monitor CSV
     print(f"  file rate {watch['fs']:.1f} Hz, {watch['time'][-1]:.0f}s | "
           f"invert={PPG.invert_ppg}  band {PPG.ppg_hp_hz}-{PPG.ppg_lp_hz} Hz order {PPG.ppg_filter_order} | "
           f"upsample x{PPG.upsample_factor} -> {PPG.target_fs:.0f} Hz")

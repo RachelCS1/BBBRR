@@ -157,7 +157,7 @@ class PPGSettings:
     rr_params: tuple = ("RSA", "RIIV", "AUC", "LP")   # (labels; not a UI control)
     rr_resample_fs: float = 10.0    # not in UI: FS_RESAMP in bpRRSeries
     rr_band_low_hz: float = 0.1     # "HP Cutoff RR (Hz)"  (paramHP_RR)
-    rr_band_high_hz: float = 0.7    # "LP Cutoff RR (Hz)"  (paramLP_RR)
+    rr_band_high_hz: float = 1.0    # "LP Cutoff RR (Hz)"  (paramLP_RR)
     rr_filter_order: int = 2        # "Filter Order"  (paramFilterOrder, shared)
     breath_start_prominence: float = 0.001  # "BS Prominence (%)"  (paramBSProm; UI is 10 %, stored as 0.001)
     rr_spec_window_sec: float = 32.0       # "FFT Length (s)"  (paramFftLength)
@@ -168,7 +168,7 @@ class PPGSettings:
     # RSA/RIIV/AUC use rr_band_* above (per-beat series). BW band-passes the raw
     # channel directly, so it gets independent cutoffs — tune these separately.
     bw_band_low_hz: float = 0.1    # BW high-pass (raw signal)
-    bw_band_high_hz: float = 0.7   # BW low-pass (raw signal)
+    bw_band_high_hz: float = 1.0   # BW low-pass (raw signal)
     bw_filter_order: int = 2        # BW filter order
 
     # ---- SpO2 (optional stretch; ratio-of-ratios) ----
@@ -194,6 +194,17 @@ class PPGSettings:
         "red": "red", "infra_red": "infra_red",
         "acc_x": "acc_x", "acc_y": "acc_y", "acc_z": "acc_z",
         "sp_o2": "sp_o2",
+    })
+
+    # ---- Monitor-mode CSV (optical channels + accelerometer, NO timestamps) ----
+    # Monitor files have a header like "PPG,Artifact,RED SIG,IR,XL-X,XL-Y,XL-Z" and
+    # no sampling_time column, so the rate can't be measured from the file — it is
+    # declared here (64 Hz). No ECG; the three XL axes map to the accelerometer, so
+    # movement/noise gating runs exactly as for real-time files.
+    monitor_row_fs: float = 64.0           # not in UI: declared monitor sampling rate
+    monitor_channel_cols: dict = field(default_factory=lambda: {
+        "PPG": "ppg", "Artifact": "artifact", "RED SIG": "red", "IR": "infra_red",
+        "XL-X": "acc_x", "XL-Y": "acc_y", "XL-Z": "acc_z",
     })
 
 
