@@ -290,3 +290,84 @@ def filter_peaks_by_prominence(signal, peaks, min_prom):
             break
         kept.pop(worst_k)
     return kept
+
+
+def _local_maxima(x):
+    """Indices of strict interior local maxima (scipy.find_peaks default; pure numpy)."""
+    x = np.asarray(x, np.float64)
+    if x.size < 3:
+        return np.array([], dtype=int)
+    return np.where((x[1:-1] > x[:-2]) & (x[1:-1] > x[2:]))[0] + 1
+
+
+def peak_detection_zero_cross(signal, noise, fs):
+    """Legacy breath-marker detector — port of Breath_by_Breath's
+    peakDetectionZeroCross (RR_run.py, v5.0).
+
+    On a respiratory-band signal (oscillating about zero), per contiguous
+    non-noise segment it takes whichever polarity of peak is *rarer* (positive
+    maxima vs negative minima) as the breath markers — the minority polarity
+    tracks breath boundaries — then keeps only the most positive marker between
+    consecutive zero crossings.
+
+    signal : respiratory-band trace (e.g. the BW 0.1-1.0 Hz band-passed channel)
+    noise  : per-sample flag, 1 = drop (movement / invalid), 0 = valid
+    fs     : sample rate (kept for signature parity; not used numerically)
+
+    Returns breath-marker sample indices (sorted, unique int array).
+
+    NOTE: the MATLAB/JS original removed duplicate markers with a scalar-only
+    expression; this port uses a set-based drop so it stays correct (and never
+    raises) when >2 markers fall between one pair of zero crossings.
+    """
+    x = np.asarray(signal, np.float64)
+    noise = np.asarray(noise).astype(int)
+    n = x.size
+    if n < 3:
+        return np.array([], dtype=int)
+
+    # 1) peaks (both polarities) on the noise-eroded valid signal
+    noise1 = noise.astype(bool).copy()
+    noise1[np.where(noise[1:] == 1)[0]] = True            # erode: 1-sample around noise
+    noise1[np.where(noise[:-1] == 1)[0] + 1] = True
+    valid_idx = np.where(~noise1)[0]
+    if valid_idx.size < 3:
+        return np.array([], dtype=int)
+    valid_sig = x[valid_idx]
+
+    pos = _local_maxima(valid_sig)
+    pos = pos[valid_sig[pos] > 0]
+    neg = _local_maxima(-valid_sig)
+    neg = neg[valid_sig[neg] < 0]
+    pos_idx = valid_idx[pos]
+    neg_idx = valid_idx[neg]
+
+    # 2) contiguous non-noise segment edges
+    seg_start = np.where((noise[:-1] == 1) & (noise[1:] == 0))[0] + 1
+    if noise[0] == 0:
+        seg_start = np.concatenate(([0], seg_start))
+    seg_end = np.where((noise[:-1] == 0) & (noise[1:] == 1))[0]
+    if noise[-1] == 0:
+        seg_end = np.concatenate((seg_end, [n - 1]))
+
+    peaks = np.array([], dtype=int)
+    for s, e in zip(seg_start, seg_end):
+        cur_pos = pos_idx[(pos_idx >= s) & (pos_idx <= e)]
+        cur_neg = neg_idx[(neg_idx >= s) & (neg_idx <= e)]
+        # 3) rarer polarity = the breath markers
+        chosen = cur_neg if cur_pos.size > cur_neg.size else cur_pos
+        peaks = np.concatenate((peaks, chosen))
+
+        # 4) keep only the highest marker between consecutive zero crossings
+        seg = x[s:e]
+        if seg.size < 2:
+            continue
+        zc = np.where(((seg[:-1] > 0) & (seg[1:] < 0)) |
+                      ((seg[:-1] < 0) & (seg[1:] > 0)))[0] + s
+        for j in range(1, zc.size):
+            between = peaks[(peaks > zc[j - 1]) & (peaks < zc[j])]
+            if between.size > 1:
+                keep = between[int(np.argmax(x[between]))]
+                peaks = peaks[~np.isin(peaks, between[between != keep])]
+
+    return np.unique(peaks.astype(int))

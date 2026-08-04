@@ -39,7 +39,7 @@ from respiration_rr.io.csv_reader import read_watch_auto
 from respiration_rr.reference.airflow import analyze_reference
 from respiration_rr.ppg.preprocess import prepare_watch
 from respiration_rr.ppg.respiration import analyze_ppg
-from respiration_rr.compare.compare import compare_watch_vs_reference
+from respiration_rr.compare.compare import compare_watch_vs_reference, mae_by_candidate
 from respiration_rr import viz
 
 
@@ -85,16 +85,21 @@ def run_ppg(csv_path):
     print(f"  {watch['fs']:.0f} Hz -> {PPG.target_fs:.0f} Hz, {sig.time[-1]-sig.time[0]:.0f}s | "
           f"channels {list(results)} | movement regions {len(sig.move_regions)}")
     print("  mean RR (bpm) by parameter:")
-    print("    %-9s %6s %6s %6s %6s %6s" % ("channel", "RSA", "RIIV", "AUC", "LP", "Ridge"))
+    cols = ["RSA", "RIIV", "AUC", "LP"]
+    if any("BWlegacy" in r.params for r in results.values()):   # only when enabled/produced
+        cols.append("BWlegacy")
+    if any("BWbank" in r.params for r in results.values()):     # only when enabled/produced
+        cols.append("BWbank")
+    fmt = "    %-9s" + "".join(" %8s" for _ in cols) + " %6s"
+    print(fmt % (("channel",) + tuple(cols) + ("Ridge",)))
     for ch, res in results.items():
         row = [ch]
-        for p in ("RSA", "RIIV", "AUC", "LP"):
+        for p in cols:
             pr = res.params.get(p)
-            v = np.nanmean(pr.rr_bpm) if pr and pr.rr_bpm.size else np.nan
-            row.append(f"{v:.1f}")
+            row.append(f"{np.nanmean(pr.rr_bpm):.1f}" if pr and pr.rr_bpm.size else "nan")
         ridge = np.nanmean(res.ridge_rr) if res.ridge_rr is not None and np.isfinite(res.ridge_rr).any() else np.nan
         row.append(f"{ridge:.1f}")
-        print("    %-9s %6s %6s %6s %6s %6s" % tuple(row))
+        print(fmt % tuple(row))
     return results, sig
 
 
@@ -103,9 +108,10 @@ def run_comparison(ppg_results, ref):
     cmp = compare_watch_vs_reference(ppg_results, ref, offset="auto")
     print(f"  best alignment offset = {cmp.offset_sec:+.0f} s | "
           f"{len(cmp.ranked)} scorable candidates")
-    print(f"  top {COMPARE.top_n} by MAE (bpm):")
-    for cand, mae, n in cmp.ranked[:COMPARE.top_n]:
-        print(f"    {cand.label:<14} MAE {mae:5.2f}  (n={n})")
+    print(f"  ALL candidates by MAE (bpm)  [* = top {COMPARE.top_n}]:")
+    for i, (cand, mae, n) in enumerate(cmp.ranked):
+        mark = "*" if i < COMPARE.top_n else " "
+        print(f"   {mark} {cand.label:<16} MAE {mae:5.2f}  (n={n})")
     return cmp
 
 
@@ -140,12 +146,15 @@ def main(argv=None):
     if not args.no_show:
         if ref is not None:
             viz.plot_reference(ref)
+        mae_lut = mae_by_candidate(cmp) if cmp is not None else {}
         if ppg_results:
             for ch, res in ppg_results.items():
-                viz.plot_ppg_channel(res)
+                mbp = {p: v for (cch, p), v in mae_lut.items() if cch == ch}
+                viz.plot_ppg_channel(res, mae_by_param=mbp)
                 viz.plot_ppg_spectrograms(res)   # 4 per-parameter spectrograms
         if cmp is not None:
             viz.plot_comparison(cmp, top_n=COMPARE.top_n)
+            viz.plot_mae_overview(cmp)           # every candidate's MAE at a glance
         print("\nOpening figures — close the windows to exit.")
         viz.show_all()
 

@@ -27,6 +27,7 @@ from .dsp import bandpass_filter
 from .beats import (
     detect_beats, detect_beats_lpf_derivative, remove_dc_beat_aligned,
     refine_ss_by_derivative, post_corr_filter, filter_peaks_by_prominence,
+    peak_detection_zero_cross,
 )
 from .systolic import compute_systolic_analysis
 from .spectrogram import compute_spectrogram, ridge_rr
@@ -98,6 +99,15 @@ def _rr_from_starts(bs_times):
     rr = np.where(ok, 60.0 / np.where(ok, dt, 1.0), np.nan)
     mid = (bs_times[:-1] + bs_times[1:]) / 2
     return mid[ok], rr[ok]
+
+
+def _noise_flag_from_regions(t, move_regions):
+    """Per-sample 0/1 noise flag on timeline `t` from (start, end) movement regions."""
+    t = np.asarray(t, np.float64)
+    flag = np.zeros(t.size, dtype=int)
+    for (s, e) in move_regions or []:
+        flag[(t >= s) & (t <= e)] = 1
+    return flag
 
 
 @dataclass
@@ -213,12 +223,69 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
                            env_x=t, env_y=lp_trace,
                            bs_times=bs_lp_t, rr_time=lp_rr_t, rr_bpm=lp_rr)
 
+    # ---- Param 5: BWlegacy (FULL legacy pipeline: their signal + their peaks) ----
+    # Build the respiration signal the old Breath_by_Breath way (FFT band-pass
+    # 0.1-0.7 Hz + peak-envelope detrend + spline gap-fill) from the RAW channel,
+    # then detect breaths with the legacy zero-cross valley detector. Movement
+    # regions -> per-sample noise flag (their noise *detector* is not ported).
+    if getattr(cfg, "bwlegacy_enabled", True):
+        from .legacy_bw import build_legacy_bw_signal, legacy_avg_rr   # lazy: only this path needs scipy
+        noise_flag = _noise_flag_from_regions(t, move_regions)
+        leg_sig, leg_noise = build_legacy_bw_signal(x, fs, noise_flag,
+                                                    getattr(cfg, "legacy_bw_p2p_th", 20.0),
+                                                    getattr(cfg, "legacy_bw_detrend_band", (0.1, 0.7)))
+
+        # Legacy average-RR gate (old BBB_RR): validity mask + agreement + range.
+        avg_ps = legacy_avg_rr(leg_sig, fs, cfg) if getattr(cfg, "legacy_bw_avg_gate", True) else None
+        det_noise = leg_noise.copy()
+        if avg_ps is not None:
+            det_noise[np.isnan(avg_ps)] = 1          # no valid average here -> exclude
+
+        bs_leg = peak_detection_zero_cross(leg_sig, det_noise, fs)
+        bs_leg_t = t[bs_leg] if bs_leg.size else np.zeros(0)
+
+        if bs_leg.size > 1:
+            dt = np.diff(bs_leg_t)
+            ok = dt > 0
+            rr_all = np.where(ok, 60.0 / np.where(ok, dt, 1.0), np.nan)
+            mid = (bs_leg_t[:-1] + bs_leg_t[1:]) / 2
+            lo, hi = getattr(cfg, "legacy_bw_valid_bpm", (6.0, 40.0))
+            keep = ok & (rr_all >= lo) & (rr_all <= hi)
+            for i in range(bs_leg.size - 1):          # drop intervals spanning noise
+                if keep[i] and np.any(det_noise[bs_leg[i]:bs_leg[i + 1]] == 1):
+                    keep[i] = False
+            if avg_ps is not None:                    # +-ratio agreement vs the average
+                avg_at = avg_ps[bs_leg[1:]]
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    ratio = np.abs(rr_all - avg_at) / avg_at
+                keep &= ~np.isnan(avg_at) & (ratio <= getattr(cfg, "legacy_bw_avg_ratio", 0.30))
+            leg_rr_t, leg_rr = mid[keep], rr_all[keep]
+        else:
+            leg_rr_t, leg_rr = np.zeros(0), np.zeros(0)
+
+        params["BWlegacy"] = RRParam("BWlegacy", series_x=t, series_y=leg_sig,
+                                     env_x=t, env_y=leg_sig,
+                                     bs_times=bs_leg_t, rr_time=leg_rr_t, rr_bpm=leg_rr)
+
+    # ---- Param 6: BWbank (MATLAB filter-bank + stitching BBB) ----
+    # Independent second BBB method: a bank of narrow band-passes, per-instant
+    # best-fit level, zero-crossing stitching at transitions, trend-machine
+    # breath detection. OFF by default (settings.PPG.bwbank_enabled).
+    if getattr(cfg, "bwbank_enabled", False):
+        from .filterbank_bbb import analyze_filterbank_bbb   # lazy: only this path needs scipy.signal.butter
+        bank = analyze_filterbank_bbb(x, t, fs, cfg, move_regions=move_regions)
+        params["BWbank"] = RRParam("BWbank", series_x=t, series_y=bank.sig_on_t,
+                                   env_x=bank.grid_t, env_y=bank.stitched,
+                                   bs_times=bank.bs_times, rr_time=bank.rr_time, rr_bpm=bank.rr_bpm)
+
     # ---- Per-parameter spectrogram + ridge (one STFT per RR parameter) ----
     # Each param's respiration-band envelope gets its own STFT so the dominant
     # respiration frequency can be tracked over time (4 spectrograms per channel).
     ridge_t = ridge_v = None
     if compute_ridge:
         for p in params.values():
+            if p.name in ("BWlegacy", "BWbank"):   # full-rate BBB traces; skip param STFT
+                continue
             _add_param_spectrogram(p, cfg)
         # channel-level ridge stays the RSA read for backward compatibility
         rsa = params.get("RSA")

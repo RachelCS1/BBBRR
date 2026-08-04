@@ -171,6 +171,51 @@ class PPGSettings:
     bw_band_high_hz: float = 1.0   # BW low-pass (raw signal)
     bw_filter_order: int = 2        # BW filter order
 
+    # ---- BWlegacy — legacy Breath_by_Breath zero-cross valley detector ----
+    # Runs on the SAME BW band-passed trace, but finds breaths with the ported
+    # legacy method (per-segment rarer-polarity peaks + zero-cross dedup) instead
+    # of prominence peaks. Exposed as an extra per-channel parameter so the two
+    # BW detectors can be compared side by side.
+    bwlegacy_enabled: bool = True  # add the BWlegacy parameter to every channel
+    # BWlegacy now runs the FULL legacy chain: build the signal the old way
+    # (FFT band-pass 0.1-0.5 Hz + peak-envelope detrend + spline gap-fill) and
+    # then detect peaks the old way. p2p_th is the legacy amplitude gate; it is
+    # sensor-scale dependent (tuned for the 64 Hz artifact ADC) so tune it for
+    # the watch channels, or set 0 to disable the amplitude gate.
+    legacy_bw_p2p_th: float = 20.0  # legacy peak-to-peak "too flat = noise" threshold
+    legacy_bw_detrend_band: tuple = (0.1, 0.7)  # FFT band-pass (Hz) before the legacy
+                                                # detrend (old upper cutoff 0.5 -> 0.7)
+    # Legacy average-RR gate (BWlegacy only): exclude times with no valid
+    # spectrogram average, and reject a breath whose rate disagrees with the
+    # local average by more than legacy_bw_avg_ratio (the old BBB_RR behaviour).
+    legacy_bw_avg_gate: bool = False         # apply the average-RR gate to BWlegacy
+    legacy_bw_avg_ratio: float = 0.30       # reject breath if |BBB - avg|/avg exceeds this
+    legacy_bw_valid_bpm: tuple = (6.0, 40.0)  # legacy valid breath-rate range (bpm)
+    legacy_bw_avg_win_sec: float = 8.0        # STFT window for the legacy average RR
+                                              # (short -> broad coverage; the shared
+                                              #  rr_spec_window_sec is too long to gate)
+
+    # ---- BWbank — MATLAB filter-bank + stitching BBB (BBB_SignalCreation.m) ----
+    # A SECOND breath-by-breath method, independent of BWlegacy: a bank of narrow
+    # band-passes (one per rate range), per-instant pick of the best-fitting band
+    # (energy + wide-band match), mode-smoothed level choice, zero-crossing
+    # STITCHING at level transitions, then a trend state-machine breath detector.
+    # OFF by default so existing outputs are byte-identical until enabled.
+    bwbank_enabled: bool = True               # add the BWbank parameter to every channel
+    bwbank_work_fs: float = 16.0              # working rate: channel is decimated to this
+    bwbank_rate_bands_bpm: tuple = ((4, 10), (8, 14), (12, 18),
+                                    (16, 22), (20, 30), (28, 40))  # rateBank (bpm)
+    bwbank_wide_band_hz: tuple = (0.04, 0.7)  # wide band-pass (reference signal)
+    bwbank_align_win_sec: float = 16.0        # moving-average window for DC removal (aligned)
+    bwbank_score_win_sec: float = 30.0        # per-band scoring window
+    bwbank_score_overlap_sec: float = 1.0     # scoring step
+    bwbank_min_valid_sec: float = 4.0         # min non-noise seconds in a window to score it
+    bwbank_level_smooth_n: int = 5            # mode-smoothing frames (LevelSelection N)
+    bwbank_bp_order: int = 3                  # Butterworth order (per narrow/wide band)
+    bwbank_peak_down_tol_sec: float = 0.5     # downward tolerance (peak detector)
+    bwbank_peak_up_th_frac: float = 0.2       # rise threshold as a fraction of the period
+    bwbank_valid_bpm: tuple = (6.0, 40.0)     # valid breath-rate range (bpm)
+
     # ---- SpO2 (optional stretch; ratio-of-ratios) ----
     spo2_R_clamp: tuple = (0.3, 2.0)             # not in UI: clamp R
     spo2_cal: tuple = (-45.060, 30.354, 94.845)  # not in UI: paramA, paramB, paramC (a*R^2+b*R+c)

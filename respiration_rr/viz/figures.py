@@ -11,7 +11,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 _PARAM_COLORS = {"RSA": "#22c55e", "RIIV": "#38bdf8", "AUC": "#f472b6",
-                 "LP": "#f97316", "Ridge": "#a855f7"}
+                 "LP": "#f97316", "BWlegacy": "#e11d48", "BWbank": "#14b8a6",
+                 "Ridge": "#a855f7"}
 
 
 def _shade_noise(ax, regions, color="#ef4444", alpha=0.10):
@@ -73,9 +74,13 @@ def plot_reference(ref, title="Reference (REMbo / Poly) — airflow RR"):
     return fig
 
 
-def plot_ppg_channel(res, title=None):
-    """One PPG channel: the four respiration-parameter envelopes with breath-starts."""
-    params = [p for p in ("RSA", "RIIV", "AUC", "LP") if p in res.params]
+def plot_ppg_channel(res, title=None, mae_by_param=None):
+    """One PPG channel: the respiration-parameter envelopes with breath-starts.
+
+    mae_by_param : optional {param_name: (mae, n)} to annotate each panel with its
+    own MAE vs the reference (from compare.mae_by_candidate, filtered to this channel).
+    """
+    params = [p for p in ("RSA", "RIIV", "AUC", "LP", "BWlegacy", "BWbank") if p in res.params]
     n = len(params)
     fig, axes = plt.subplots(n, 1, figsize=(13, 2.1 * n), sharex=True)
     if n == 1:
@@ -94,7 +99,11 @@ def plot_ppg_channel(res, title=None):
             ax.plot(pr.bs_times, ymark, "v", color="#fbbf24", ms=6, label="Breath start")
         ax.set_ylabel(pname)
         mean_rr = np.nanmean(pr.rr_bpm) if pr.rr_bpm.size else float("nan")
-        ax.set_title(f"{pname}: {pr.rr_bpm.size} breaths, mean RR = {mean_rr:.1f} bpm",
+        extra = ""
+        if mae_by_param and pname in mae_by_param:
+            mm, nn = mae_by_param[pname]
+            extra = f" | MAE {mm:.2f} bpm (n={nn})"
+        ax.set_title(f"{pname}: {pr.rr_bpm.size} breaths, mean RR = {mean_rr:.1f} bpm{extra}",
                      fontsize=9)
         ax.legend(loc="upper right", fontsize=8)
 
@@ -146,9 +155,14 @@ def plot_ppg_spectrograms(res, title=None, max_bpm=54):
 def plot_ppg_overview(ppg_results):
     """Grouped bar chart: mean RR per parameter for each channel."""
     channels = list(ppg_results)
-    params = ["RSA", "RIIV", "AUC", "LP", "Ridge"]
+    params = ["RSA", "RIIV", "AUC", "LP"]
+    if any("BWlegacy" in ppg_results[ch].params for ch in channels):   # only when produced
+        params.append("BWlegacy")
+    if any("BWbank" in ppg_results[ch].params for ch in channels):     # only when produced
+        params.append("BWbank")
+    params.append("Ridge")
     fig, ax = plt.subplots(figsize=(11, 5))
-    width = 0.15
+    width = 0.15 if len(params) <= 5 else 0.13
     xbase = np.arange(len(channels))
     for i, p in enumerate(params):
         vals = []
@@ -161,7 +175,7 @@ def plot_ppg_overview(ppg_results):
                 v = np.nanmean(pr.rr_bpm) if pr and pr.rr_bpm.size else np.nan
             vals.append(v)
         ax.bar(xbase + i * width, vals, width, label=p, color=_PARAM_COLORS.get(p))
-    ax.set_xticks(xbase + width * 2)
+    ax.set_xticks(xbase + width * (len(params) - 1) / 2)
     ax.set_xticklabels(channels)
     ax.set_ylabel("Mean RR (bpm)")
     ax.set_title("Watch PPG — mean respiration rate by parameter × channel", fontweight="bold")
@@ -246,6 +260,33 @@ def plot_movement_preprocess(mv, window=None):
     if window:
         axes[-1].set_xlim(*window)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
+    return fig
+
+
+def plot_mae_overview(cmp, title="All watch candidates — MAE vs reference"):
+    """Horizontal bar of EVERY scored candidate's MAE, sorted best-first.
+
+    One figure to see all final results at a glance (not just the top N). Bars are
+    coloured by parameter; the value and overlap count are printed on each bar."""
+    if cmp is None or not cmp.ranked:
+        return None
+    labels = [c.label for (c, mae, n) in cmp.ranked]
+    maes = np.array([mae for (c, mae, n) in cmp.ranked])
+    ns = [n for (c, mae, n) in cmp.ranked]
+    cols = [_PARAM_COLORS.get(c.param, "#888") for (c, mae, n) in cmp.ranked]
+    y = np.arange(len(labels))
+    fig, ax = plt.subplots(figsize=(9, max(3.0, 0.34 * len(labels))))
+    ax.barh(y, maes, color=cols)
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.invert_yaxis()                                    # best (lowest MAE) on top
+    for yi, (m, nn) in enumerate(zip(maes, ns)):
+        ax.text(m, yi, f" {m:.2f} (n={nn})", va="center", fontsize=7)
+    ax.margins(x=0.12)
+    ax.set_xlabel("MAE (bpm)")
+    ax.set_title(f"{title}\noffset = {cmp.offset_sec:+.0f} s  ·  {len(labels)} candidates",
+                 fontweight="bold", fontsize=11)
+    fig.tight_layout()
     return fig
 
 

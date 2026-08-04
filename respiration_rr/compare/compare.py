@@ -32,6 +32,13 @@ class CompareResult:
     candidates: list = field(default_factory=list)
 
 
+def mae_by_candidate(cmp):
+    """{(channel, param): (mae, n_overlap)} for every scored candidate.
+
+    Convenience lookup so plots can annotate each parameter with its own MAE."""
+    return {(c.channel, c.param): (mae, n) for (c, mae, n) in cmp.ranked}
+
+
 def reference_rr_series(ref_result):
     """(center_time, rate) for accepted reference breaths, sorted by time."""
     b = [(br.center, br.rate) for br in ref_result.breaths
@@ -44,7 +51,7 @@ def reference_rr_series(ref_result):
     return t, r
 
 
-def collect_watch_candidates(ppg_results, params=("RSA", "RIIV", "AUC", "LP")):
+def collect_watch_candidates(ppg_results, params=("RSA", "RIIV", "AUC", "LP", "BWlegacy", "BWbank")):
     """Flatten analyze_ppg() output into a list of Candidate series."""
     cands = []
     for channel, res in ppg_results.items():
@@ -112,7 +119,7 @@ def auto_align_offset(cands, ref_time, ref_rr, search_range=None, step=1.0):
 
 
 def compare_watch_vs_reference(ppg_results, ref_result, offset="auto",
-                               top_n=None, params=("RSA", "RIIV", "AUC", "LP")):
+                               top_n=None, params=("RSA", "RIIV", "AUC", "LP", "BWlegacy", "BWbank")):
     """End-to-end comparison. offset can be a number or "auto" (scan for best)."""
     if top_n is None:
         top_n = COMPARE.top_n
