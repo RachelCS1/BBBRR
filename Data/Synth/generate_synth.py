@@ -24,10 +24,22 @@ For each breathing scenario it writes a folder containing:
 
   ground_truth_rr.csv Per-breath truth: breath_start_s, rr_bpm (=60/dt) + the target RR(t).
 
-Scenarios (all within 6-40 bpm, 5 min, clean):
+Scenarios (all within 6-40 bpm, 5 min):
   stepped   normal->slow->fast->very-slow->fast segments
   constant  steady 15 bpm
   ramp      6 -> 40 bpm linear sweep
+
+Each scenario is written CLEAN plus five moderate NOISE variants, all sharing the
+same breathing timeline (so ground_truth_rr is identical across variants):
+  white     elevated Gaussian sensor noise
+  mains     50 Hz power-line + harmonics (aliases to ~14 Hz at 64 Hz Fs)
+  spikes    sharp impulse glitches, random sign, on the optical channels
+  motion    3 artifact windows: baseline excursion + burst on PPG, a CORRELATED
+            accelerometer oscillation, and an EDF Activity spike (both gates fire)
+  combined  white + mains + spikes + motion together, moderate
+
+Noise is added ON TOP of the clean signal; the ground truth is never touched, so
+you can measure how much RR the algorithm still recovers under each condition.
 
 Run:  py Data/Synth/generate_synth.py
 """
@@ -233,61 +245,187 @@ def write_edf(path, signals, rec_duration=1.0):
 
 
 # ----------------------------------------------------------------------------
-# One scenario -> folder of files
+# Channel specs: CSV column -> (DC level, AC pulse amplitude, base sensor noise)
 # ----------------------------------------------------------------------------
+SPECS = {
+    "PPG":     (20000, 2500, 30),
+    "Artifact": (10000, 800, 60),
+    "RED SIG": (30000, 2000, 35),
+    "IR":      (45000, 4000, 45),
+}
+
 _SEED_OFFSET = {"stepped": 1, "constant": 2, "ramp": 3}
 
+# variant name -> extra seed offset (keeps every (pattern, variant) reproducible)
+VARIANTS = ("clean", "white", "mains", "spikes", "motion", "combined")
+_NOISE_SEED = {"clean": 0, "white": 10, "mains": 20, "spikes": 30, "motion": 40, "combined": 50}
 
-def build_scenario(name, out_dir):
-    rng = np.random.default_rng(SEED + _SEED_OFFSET[name])
-    prefix = name + "_"                              # flat layout (OneDrive-safe)
 
+# ----------------------------------------------------------------------------
+# Clean signal (no noise) — the noise variants are all built on top of this,
+# so the ground-truth breathing timeline is identical across every variant.
+# ----------------------------------------------------------------------------
+def build_clean(name, rng):
     t_fine, phi = respiration_phase(name)
     theta = cardiac_phase(t_fine, phi)
     starts = breath_starts(t_fine, phi)
 
-    # ---- watch monitor CSV @ 64 Hz ----
     tw = np.arange(0.0, T, 1.0 / FS_WATCH)
-    ppg = optical_channel(tw, t_fine, phi, theta, dc=20000, ac=2500, bw_amp=2500 * BW_FRAC, noise_std=30, rng=rng)
-    ir  = optical_channel(tw, t_fine, phi, theta, dc=45000, ac=4000, bw_amp=4000 * BW_FRAC, noise_std=45, rng=rng)
-    red = optical_channel(tw, t_fine, phi, theta, dc=30000, ac=2000, bw_amp=2000 * BW_FRAC, noise_std=35, rng=rng)
-    art = optical_channel(tw, t_fine, phi, theta, dc=10000, ac=800,  bw_amp=800 * BW_FRAC,  noise_std=60, rng=rng)
+    chans = {col: optical_channel(tw, t_fine, phi, theta, dc, ac, ac * BW_FRAC, bn, rng)
+             for col, (dc, ac, bn) in SPECS.items()}
 
-    # near-flat accelerometer (clean -> no movement regions)
-    ax = 0.0 + rng.normal(0, 0.05, tw.size)
-    ay = 0.0 + rng.normal(0, 0.05, tw.size)
+    ax = rng.normal(0, 0.05, tw.size)               # near-flat accel = subject at rest
+    ay = rng.normal(0, 0.05, tw.size)
     az = 1000.0 + rng.normal(0, 0.05, tw.size)
 
-    watch_df = pd.DataFrame({
-        "PPG": ppg, "Artifact": art, "RED SIG": red, "IR": ir,
-        "XL-X": ax, "XL-Y": ay, "XL-Z": az,
-    })
-    watch_path = os.path.join(out_dir, prefix + "monitor_watch.csv")
-    watch_df.to_csv(watch_path, index=False, float_format="%.3f")
-
-    # ---- REMbo EDF: Nasal P airflow + Activity ----
     tr = np.arange(0.0, T, 1.0 / FS_REF)
     airflow = airflow_reference(tr, t_fine, phi)
     ta = np.arange(0.0, T, 1.0 / FS_ACT)
-    activity = np.zeros(ta.size)          # perfectly flat -> subject at rest, no noise gating
-    edf_path = os.path.join(out_dir, prefix + "reference.edf")
-    write_edf(edf_path, [
-        {"label": "Nasal P",  "data": airflow,  "fs": FS_REF, "phys_min": -1.5, "phys_max": 1.5, "dim": "cmH2O"},
-        {"label": "Activity", "data": activity, "fs": FS_ACT, "phys_min": 0.0,  "phys_max": 100.0, "dim": "a.u."},
+    activity = np.zeros(ta.size)
+
+    return dict(name=name, tw=tw, chans=chans, ax=ax, ay=ay, az=az,
+                airflow=airflow, ta=ta, activity=activity, starts=starts)
+
+
+# ----------------------------------------------------------------------------
+# Noise injectors (moderate level). Each mutates copies in place.
+# ----------------------------------------------------------------------------
+def _white(chans, rng, frac):
+    """Elevated Gaussian sensor noise, scaled per channel AC."""
+    for col, (dc, ac, bn) in SPECS.items():
+        chans[col] += rng.normal(0, frac * ac, chans[col].size)
+
+
+def _mains(chans, tw, comps):
+    """Power-line interference: 50 Hz + harmonics. NB the watch samples at 64 Hz,
+    so 50 Hz aliases to ~14 Hz; it still sits above the 8 Hz PPG LP, so this mainly
+    exercises the band-pass. Comps = [(freq_hz, amp_frac_of_AC), ...]."""
+    for col, (dc, ac, bn) in SPECS.items():
+        s = np.zeros_like(tw)
+        for f, frac in comps:
+            s += frac * ac * np.sin(2.0 * np.pi * f * tw)
+        chans[col] += s
+
+
+def _spikes(chans, tw, rng, rate_hz, amp_frac_range):
+    """Sharp impulse glitches (electrical taps), shared sign across optical channels."""
+    n = int(rate_hz * T)
+    pos = rng.integers(0, tw.size - 2, n)
+    for p in pos:
+        sign = 1.0 if rng.random() < 0.5 else -1.0
+        amp = rng.uniform(*amp_frac_range)
+        w = int(rng.integers(1, 3))                 # 1-2 samples wide
+        for col, (dc, ac, bn) in SPECS.items():
+            chans[col][p:p + w] += sign * amp * ac
+
+
+def _pick_windows(rng, n, dur_range):
+    """n non-overlapping windows spread across the record (avoids the first/last 10 s)."""
+    seg = (T - 20.0) / n
+    out = []
+    for k in range(n):
+        dur = rng.uniform(*dur_range)
+        lo = 10.0 + k * seg
+        hi = max(lo, 10.0 + (k + 1) * seg - dur)
+        st = rng.uniform(lo, hi)
+        out.append((st, st + dur))
+    return out
+
+
+def _motion(chans, tw, ax, ay, az, activity, ta, rng, n_windows):
+    """Motion-artifact windows: big baseline excursion + broadband burst on the
+    optical channels, a CORRELATED accelerometer oscillation (so the watch
+    movement-gate fires), and an Activity spike on the EDF side (so the REMbo
+    gate fires on the same windows). Returns the window list."""
+    windows = _pick_windows(rng, n_windows, (5.0, 15.0))
+    for (s, e) in windows:
+        m = (tw >= s) & (tw < e)
+        nsel = int(m.sum())
+        if nsel < 2:
+            continue
+        loc = (tw[m] - s) / (e - s)
+        bump = 0.5 - 0.5 * np.cos(2.0 * np.pi * loc)          # smooth 0->1->0 envelope
+        for col, (dc, ac, bn) in SPECS.items():
+            sgn = 1.0 if rng.random() < 0.5 else -1.0
+            chans[col][m] += sgn * 5.0 * ac * bump             # baseline excursion
+            chans[col][m] += rng.normal(0, 0.3 * ac, nsel)     # broadband burst
+        f = rng.uniform(2.0, 4.0)
+        osc = 250.0 * np.sin(2.0 * np.pi * f * tw[m] + rng.uniform(0, 2 * np.pi)) * bump
+        ax[m] += osc
+        ay[m] += osc * rng.uniform(0.5, 1.0)
+        az[m] += osc * rng.uniform(0.5, 1.0)
+        am = (ta >= s) & (ta < e)
+        activity[am] = 50.0                                    # REMbo activity spike
+    return windows
+
+
+def apply_noise(base, variant, rng):
+    """Return noisy copies (chans, ax, ay, az, activity) for a variant."""
+    chans = {k: v.copy() for k, v in base["chans"].items()}
+    ax, ay, az = base["ax"].copy(), base["ay"].copy(), base["az"].copy()
+    activity = base["activity"].copy()
+    tw, ta = base["tw"], base["ta"]
+
+    if variant == "clean":
+        pass
+    elif variant == "white":
+        _white(chans, rng, 0.08)
+    elif variant == "mains":
+        _mains(chans, tw, [(50, 0.10), (100, 0.05), (150, 0.03)])
+    elif variant == "spikes":
+        _spikes(chans, tw, rng, 0.25, (3.0, 8.0))
+    elif variant == "motion":
+        _motion(chans, tw, ax, ay, az, activity, ta, rng, 3)
+    elif variant == "combined":                                # everything, moderate
+        _white(chans, rng, 0.05)
+        _mains(chans, tw, [(50, 0.06), (100, 0.03)])
+        _spikes(chans, tw, rng, 0.15, (3.0, 6.0))
+        _motion(chans, tw, ax, ay, az, activity, ta, rng, 2)
+    else:
+        raise ValueError(variant)
+    return chans, ax, ay, az, activity
+
+
+# ----------------------------------------------------------------------------
+# Write one variant (matched watch CSV + REMbo EDF + ground truth)
+# ----------------------------------------------------------------------------
+def write_variant(out_dir, base, variant, chans, ax, ay, az, activity):
+    name = base["name"]
+    prefix = f"{name}_" if variant == "clean" else f"{name}_{variant}_"
+    tw, starts = base["tw"], base["starts"]
+
+    watch_df = pd.DataFrame({
+        "PPG": chans["PPG"], "Artifact": chans["Artifact"],
+        "RED SIG": chans["RED SIG"], "IR": chans["IR"],
+        "XL-X": ax, "XL-Y": ay, "XL-Z": az,
+    })
+    watch_df.to_csv(os.path.join(out_dir, prefix + "monitor_watch.csv"),
+                    index=False, float_format="%.3f")
+
+    write_edf(os.path.join(out_dir, prefix + "reference.edf"), [
+        {"label": "Nasal P",  "data": base["airflow"], "fs": FS_REF, "phys_min": -1.5, "phys_max": 1.5, "dim": "cmH2O"},
+        {"label": "Activity", "data": activity,        "fs": FS_ACT, "phys_min": 0.0,  "phys_max": 100.0, "dim": "a.u."},
     ])
 
-    # ---- ground truth ----
-    rr_true = 60.0 / np.diff(starts)                 # bpm, assigned to the *end* breath
-    gt = pd.DataFrame({"breath_start_s": starts[1:], "rr_bpm": rr_true})
-    gt.to_csv(os.path.join(out_dir, prefix + "ground_truth_rr.csv"), index=False, float_format="%.4f")
-
-    # also save the continuous target RR(t) for plotting
+    rr_true = 60.0 / np.diff(starts)
+    pd.DataFrame({"breath_start_s": starts[1:], "rr_bpm": rr_true}).to_csv(
+        os.path.join(out_dir, prefix + "ground_truth_rr.csv"), index=False, float_format="%.4f")
     pd.DataFrame({"time_s": tw, "target_rr_bpm": rr_profile(name, tw)}).to_csv(
         os.path.join(out_dir, prefix + "target_rr.csv"), index=False, float_format="%.4f")
+    return prefix
 
+
+def build_scenario(name, out_dir):
+    base = build_clean(name, np.random.default_rng(SEED + _SEED_OFFSET[name]))
+    starts = base["starts"]
+    rr_true = 60.0 / np.diff(starts)
     print(f"[{name:8s}] {len(starts)} breaths | "
-          f"RR {rr_true.min():.1f}-{rr_true.max():.1f} bpm (mean {rr_true.mean():.1f}) | "
-          f"watch {watch_df.shape[0]} rows @64Hz | edf {os.path.basename(edf_path)}")
+          f"RR {rr_true.min():.1f}-{rr_true.max():.1f} bpm (mean {rr_true.mean():.1f})")
+    for variant in VARIANTS:
+        rng = np.random.default_rng(SEED + _SEED_OFFSET[name] + _NOISE_SEED[variant])
+        chans, ax, ay, az, activity = apply_noise(base, variant, rng)
+        prefix = write_variant(out_dir, base, variant, chans, ax, ay, az, activity)
+        print(f"    -> {prefix}*")
     return out_dir
 
 
@@ -326,15 +464,18 @@ def main():
             "Pass one explicitly, e.g.:  py Data/Synth/generate_synth.py C:/Temp/synth"
             % ", ".join(candidates))
 
-    print(f"Generating synthetic RR data ({T:.0f}s, {FS_WATCH:.0f} Hz watch, clean) -> {out_dir}\n")
+    print(f"Generating synthetic RR data ({T:.0f}s, {FS_WATCH:.0f} Hz watch) -> {out_dir}")
+    print(f"variants per scenario: {', '.join(VARIANTS)}\n")
     for name in ("stepped", "constant", "ramp"):
         build_scenario(name, out_dir)
-    print(f"\nDone -> {out_dir}")
-    print("Files per scenario: <name>_monitor_watch.csv, <name>_reference.edf, "
-          "<name>_ground_truth_rr.csv, <name>_target_rr.csv")
-    print(f"\nRun the pipeline, e.g.:\n"
-          f'  py main.py --edf "{os.path.join(out_dir, "constant_reference.edf")}" '
-          f'--watch "{os.path.join(out_dir, "constant_monitor_watch.csv")}"')
+    n = 3 * len(VARIANTS)
+    print(f"\nDone -> {out_dir}  ({n} matched pairs)")
+    print("Each pair: <name>[_<noise>]_monitor_watch.csv + _reference.edf + _ground_truth_rr.csv")
+    print(f"\nRun the pipeline, e.g. (clean vs a noisy variant):\n"
+          f'  py main.py --edf "{os.path.join(out_dir, "stepped_reference.edf")}" '
+          f'--watch "{os.path.join(out_dir, "stepped_monitor_watch.csv")}"\n'
+          f'  py main.py --edf "{os.path.join(out_dir, "stepped_motion_reference.edf")}" '
+          f'--watch "{os.path.join(out_dir, "stepped_motion_monitor_watch.csv")}"')
 
 
 if __name__ == "__main__":
