@@ -51,7 +51,7 @@ def reference_rr_series(ref_result):
     return t, r
 
 
-def collect_watch_candidates(ppg_results, params=("RSA", "RIIV", "AUC", "LP", "BWlegacy", "BWbank")):
+def collect_watch_candidates(ppg_results, params=("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp", "AUC", "AUC_spline", "AUC_ssp", "LP", "BWlegacy", "BWbank")):
     """Flatten analyze_ppg() output into a list of Candidate series."""
     cands = []
     for channel, res in ppg_results.items():
@@ -103,30 +103,14 @@ def rank_candidates(cands, ref_time, ref_rr, offset, min_overlap_sec=None):
     return scored
 
 
-def auto_align_offset(cands, ref_time, ref_rr, search_range=None, step=1.0):
-    """Scan offsets in [-search_range, +search_range] and return the one that
-    minimises the best-candidate MAE. The watch and REMbo are the same recording
-    started near-simultaneously, so the true offset is small; this refines it."""
-    if search_range is None:
-        search_range = min(60.0, COMPARE.offset_range_sec)
-    best_off, best_mae = 0.0, float("inf")
-    for off in np.arange(-search_range, search_range + step, step):
-        ranked = rank_candidates(cands, ref_time, ref_rr, off)
-        if ranked and ranked[0][1] < best_mae:
-            best_mae = ranked[0][1]
-            best_off = float(off)
-    return best_off, best_mae
-
-
-def compare_watch_vs_reference(ppg_results, ref_result, offset="auto",
-                               top_n=None, params=("RSA", "RIIV", "AUC", "LP", "BWlegacy", "BWbank")):
-    """End-to-end comparison. offset can be a number or "auto" (scan for best)."""
+def compare_watch_vs_reference(ppg_results, ref_result, offset=0.0,
+                               top_n=None, params=("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp", "AUC", "AUC_spline", "AUC_ssp", "LP", "BWlegacy", "BWbank")):
+    """End-to-end comparison. `offset` (seconds) shifts every watch candidate onto
+    the REMbo clock; supply the IR-PPG MSD sync offset (see respiration_rr.sync)."""
     if top_n is None:
         top_n = COMPARE.top_n
     ref_t, ref_r = reference_rr_series(ref_result)
     cands = collect_watch_candidates(ppg_results, params)
-    if offset == "auto":
-        offset, _ = auto_align_offset(cands, ref_t, ref_r)
     ranked = rank_candidates(cands, ref_t, ref_r, offset)
     return CompareResult(offset_sec=float(offset), ref_time=ref_t, ref_rr=ref_r,
                          ranked=ranked, candidates=cands)

@@ -12,7 +12,13 @@ import matplotlib.pyplot as plt
 
 _PARAM_COLORS = {"RSA": "#22c55e", "RIIV": "#38bdf8", "AUC": "#f472b6",
                  "LP": "#f97316", "BWlegacy": "#e11d48", "BWbank": "#14b8a6",
-                 "Ridge": "#a855f7"}
+                 "Ridge": "#a855f7",
+                 # cubic-spline variants (darker shade of each base param)
+                 "RSA_spline": "#15803d", "RIIV_spline": "#0369a1",
+                 "AUC_spline": "#be185d",
+                 # smoothing-spline variants (distinct third shade)
+                 "RSA_ssp": "#65a30d", "RIIV_ssp": "#0891b2",
+                 "AUC_ssp": "#db2777"}
 
 
 def _shade_noise(ax, regions, color="#ef4444", alpha=0.10):
@@ -80,7 +86,9 @@ def plot_ppg_channel(res, title=None, mae_by_param=None):
     mae_by_param : optional {param_name: (mae, n)} to annotate each panel with its
     own MAE vs the reference (from compare.mae_by_candidate, filtered to this channel).
     """
-    params = [p for p in ("RSA", "RIIV", "AUC", "LP", "BWlegacy", "BWbank") if p in res.params]
+    params = [p for p in ("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp",
+                          "AUC", "AUC_spline", "AUC_ssp", "LP", "BWlegacy", "BWbank")
+              if p in res.params]
     n = len(params)
     fig, axes = plt.subplots(n, 1, figsize=(13, 2.1 * n), sharex=True)
     if n == 1:
@@ -112,13 +120,68 @@ def plot_ppg_channel(res, title=None, mae_by_param=None):
     return fig
 
 
+def plot_spline_comparison(res, title=None, window=None, mae_by_param=None):
+    """Per parameter (RSA / RIIV / AUC): overlay the final respiration-rate (RR)
+    curve from each interpolation method's detected peaks:
+      - linear+BP  (original: linear interp + band-pass)
+      - spline     (interpolating cubic spline, no band-pass)
+      - smoothing  (penalized smoothing spline, no band-pass)
+
+    One panel per parameter that has the base "X" plus at least one spline
+    variant. Each curve is RR (bpm) over time from that method's breath-start
+    peaks — the graph that relies on the peaks each method found.
+    mae_by_param : optional {param_name: (mae, n)} to annotate each line's MAE.
+    """
+    bases = [b for b in ("RSA", "RIIV", "AUC")
+             if b in res.params and any(f"{b}_{v}" in res.params
+                                        for v in ("spline", "ssp"))]
+    if not bases:
+        return None
+    n = len(bases)
+    fig, axes = plt.subplots(n, 1, figsize=(13, 2.6 * n), sharex=True, sharey=True)
+    if n == 1:
+        axes = [axes]
+    fig.suptitle(title or f"Watch PPG — {res.channel} — respiration rate (RR): "
+                 f"linear+BP vs cubic spline vs smoothing spline (from each method's peaks)",
+                 fontsize=13, fontweight="bold")
+
+    def _mae(pname):
+        if mae_by_param and pname in mae_by_param:
+            mm, nn = mae_by_param[pname]
+            return f", MAE {mm:.2f}"
+        return ""
+
+    def _line(ax, pr, name, style, label):
+        if pr is not None and pr.rr_bpm.size:
+            ax.plot(pr.rr_time, pr.rr_bpm, style, color=_PARAM_COLORS.get(name, "#333"),
+                    ms=3, lw=0.9,
+                    label=f"{label} ({pr.rr_bpm.size} br, {np.nanmean(pr.rr_bpm):.1f} bpm{_mae(name)})")
+
+    for ax, base in zip(axes, bases):
+        _line(ax, res.params.get(base), base, "o-", "linear+BP")
+        _line(ax, res.params.get(f"{base}_spline"), f"{base}_spline", "s--", "spline")
+        _line(ax, res.params.get(f"{base}_ssp"), f"{base}_ssp", "d:", "smoothing")
+        ax.set_ylabel(f"{base}\nRR (bpm)")
+        ax.set_title(f"{base} — RR from peaks: linear+BP (○ solid) vs spline (□ dashed) "
+                     f"vs smoothing (◇ dotted)", fontsize=9, loc="left")
+        ax.legend(loc="upper right", fontsize=8, ncol=3)
+        ax.grid(True, alpha=0.15)
+
+    axes[-1].set_xlabel("Time (s)")
+    if window:
+        axes[-1].set_xlim(*window)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    return fig
+
+
 def plot_ppg_spectrograms(res, title=None, max_bpm=54):
     """One PPG channel: the STFT spectrogram of EACH of the four RR parameters
     (RSA/RIIV/AUC/LP), with the extracted respiration ridge overlaid.
 
     Mirrors the HTML's RR-envelope spectrogram, but per parameter — four panels,
     frequency (bpm) on the y-axis, power (dB) as colour, time on the x-axis."""
-    params = [p for p in ("RSA", "RIIV", "AUC", "LP")
+    params = [p for p in ("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp",
+                          "AUC", "AUC_spline", "AUC_ssp", "LP")
               if p in res.params and res.params[p].spect is not None]
     if not params:
         return None
@@ -156,6 +219,10 @@ def plot_ppg_overview(ppg_results):
     """Grouped bar chart: mean RR per parameter for each channel."""
     channels = list(ppg_results)
     params = ["RSA", "RIIV", "AUC", "LP"]
+    for sp in ("RSA_spline", "RIIV_spline", "AUC_spline",
+               "RSA_ssp", "RIIV_ssp", "AUC_ssp"):                     # only when produced
+        if any(sp in ppg_results[ch].params for ch in channels):
+            params.append(sp)
     if any("BWlegacy" in ppg_results[ch].params for ch in channels):   # only when produced
         params.append("BWlegacy")
     if any("BWbank" in ppg_results[ch].params for ch in channels):     # only when produced

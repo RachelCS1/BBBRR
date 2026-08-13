@@ -52,7 +52,8 @@ class ReferenceSettings:
     hyst_frac: float = 0.20         # not in UI: HYST_FRAC = 20% of local RMS
 
     # ---- Reference agreement (computeBreathMetrics) ----
-    time_shift_sec: float = -846.0  # "Time Shift (s)"  (paramTimeShift)
+    time_shift_sec: float = 0.0     # manual fixed reference-device shift; 0 = off
+                                    # (set only if a reference device has a known constant offset)
     stale_run_sec: float = 30.0     # not in UI: reference frozen >= 30 s = stale
     ref_gate_min_bpm: float = 3.0   # not in UI: device rate < 3 skipped
     ref_gate_max_bpm: float = 40.0  # not in UI: device rate > 40 skipped
@@ -155,6 +156,50 @@ class PPGSettings:
 
     # ---- Respiration: the FOUR parameters + spectral ridge (bpRRSeries) ----
     rr_params: tuple = ("RSA", "RIIV", "AUC", "LP")   # (labels; not a UI control)
+    # Cubic-spline RR variant (comparison alternative to linear-interp + BP):
+    # when True, RSA/RIIV/AUC each get a second parameter ("*_spline") whose
+    # envelope is a cubic spline through the per-beat series with NO band-pass,
+    # so the spline method can be compared head-to-head with the existing
+    # linear-interp+band-pass envelope. The original params are untouched.
+    rr_spline_enabled: bool = True
+    # Breath-start prominence for the spline variants ONLY. None -> reuse
+    # breath_start_prominence (kept in lock-step with the linear+BP params).
+    # Set a value to tune the spline peak detector independently — e.g. raise
+    # it to reject the extra spurious peaks the un-band-passed spline can add.
+    rr_spline_prominence: float = 0.08
+    # Spline breath-start detection: False = peaks (maxima, default, unchanged),
+    # True = valleys (minima). Applies to the spline variants ONLY; the linear+BP
+    # params always use peaks. Valley detection = same detector on the inverted
+    # envelope, so RR marks the opposite respiration phase.
+    rr_spline_use_valleys: bool = True
+    # Smoothing-spline RR variant (THIRD approach): a penalized spline that
+    # denoises the beat-to-beat jitter WITHOUT a band-pass — less information
+    # loss than linear+BP, cleaner than the interpolating spline. Adds "*_ssp"
+    # params (RSA_ssp/RIIV_ssp/AUC_ssp). Reuses rr_spline_prominence and
+    # rr_spline_use_valleys for peak detection.
+    rr_ssp_enabled: bool = True
+    # Smoothing strength, expressed as an effective -3 dB CUTOFF in Hz (intuitive
+    # and scale-invariant: the signal is standardised before fitting). Keep
+    # respiration (<=~0.8 Hz ≈ 50 bpm) and smooth faster beat-to-beat jitter.
+    # Lower cutoff = smoother. Derived to lam = 1/(2*pi*fc)^4 for the cubic
+    # smoothing spline. Set rr_ssp_lam to override with a raw lambda instead.
+    rr_ssp_cutoff_hz: float = 0.5
+    rr_ssp_lam: float = None        # raw smoothing lambda; None -> derive from rr_ssp_cutoff_hz
+    # Breath-start prominence for the smoothing-spline variants ONLY.
+    # None -> reuse rr_spline_prominence (which itself falls back to
+    # breath_start_prominence). Set a value to tune the ssp peak detector
+    # independently of the interpolating-spline variants.
+    rr_ssp_prominence: float = 0.01
+    # Combined global+local prominence for breath-start detection on the RR
+    # envelope (ALL envelope variants: linear, spline, ssp). A peak must clear
+    # BOTH: the global floor (its own prominence x global range) AND a local
+    # check (rr_local_prom_frac x local range), where local range is max-min in
+    # a +-rr_local_prom_win_sec window around the peak. The local term only
+    # bites when rr_local_prom_frac exceeds the global fraction, rejecting peaks
+    # that pass the absolute floor but don't stand out locally. Set either to
+    # None/0 for global-only prominence (original behaviour).
+    rr_local_prom_win_sec: float = 8.0   # local window (s); None/0 -> global only
+    rr_local_prom_frac: float = 0.2      # local-relative fraction f_l; None/0 -> global only
     rr_resample_fs: float = 10.0    # not in UI: FS_RESAMP in bpRRSeries
     rr_band_low_hz: float = 0.1     # "HP Cutoff RR (Hz)"  (paramHP_RR)
     rr_band_high_hz: float = 1.0    # "LP Cutoff RR (Hz)"  (paramLP_RR)
@@ -265,7 +310,24 @@ class CompareSettings:
     # scoring metric is MAE (bpm) of a watch RR series vs the REMbo zero-crossing RR
 
 
+# ======================================================================
+# IR-PPG MSD time-synchronisation (watch <-> REMbo)
+#   Source: respiration_rr/sync.py
+# ======================================================================
+@dataclass
+class SyncSettings:
+    max_offset_sec: float = 100.0   # search range +- (devices start near-simultaneously)
+    coarse_step_sec: float = 0.05   # coarse offset scan step
+    fine_step_sec: float = 0.005    # fine refine step (~5 ms)
+    match_tol_sec: float = 0.10     # a watch MSD matches a REMbo MSD if within this
+    min_overlap_sec: float = 60.0   # require >= this matched span to trust the offset
+    min_matched: int = 20           # require >= this many matched beats
+    window_sec: float = 120.0       # clean-window length for the residual lock
+    min_prominence: float = 3.0     # flag LOW if the match-count peak is < this many sigma
+
+
 # Singletons — import these.
 REFERENCE = ReferenceSettings()
 PPG = PPGSettings()
 COMPARE = CompareSettings()
+SYNC = SyncSettings()

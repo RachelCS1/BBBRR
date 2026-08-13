@@ -40,6 +40,7 @@ from respiration_rr.reference.airflow import analyze_reference
 from respiration_rr.ppg.preprocess import prepare_watch
 from respiration_rr.ppg.respiration import analyze_ppg
 from respiration_rr.compare.compare import compare_watch_vs_reference, mae_by_candidate
+from respiration_rr.sync import offset_from_msd, read_rembo_pulse_wave
 from respiration_rr import viz
 
 
@@ -103,10 +104,37 @@ def run_ppg(csv_path):
     return results, sig
 
 
-def run_comparison(ppg_results, ref):
+def run_sync(edf_path, ppg_results, sig):
+    """IR-PPG MSD time-sync -> offset (s) to ADD to the watch clock to reach REMbo.
+
+    Uses the watch IR MSD fiducials already computed by analyze_ppg and the REMbo
+    Pulse Wave; independent of the respiration signals being compared.
+    """
+    print("\n[Sync]  IR-PPG MSD (watch <-> REMbo)")
+    ir = ppg_results.get("IR")
+    if ir is None or len(ir.msd_idx) == 0:
+        print("  no watch IR MSD available — using offset 0")
+        return 0.0
+    watch_msd_t = sig.time[np.asarray(ir.msd_idx, dtype=int)]
+    try:
+        pw, pwfs, name = read_rembo_pulse_wave(edf_path)
+    except Exception as e:
+        print(f"  no REMbo Pulse Wave ({e}) — using offset 0")
+        return 0.0
+    res = offset_from_msd(watch_msd_t, pw, pwfs)
+    flag = ("LOW — " + res.reason) if res.low_confidence else "OK"
+    print(f"  Pulse Wave '{name}' @ {pwfs:.0f} Hz | REMbo polarity "
+          f"{'inverted' if res.polarity < 0 else 'as-is'}")
+    print(f"  offset = {res.offset_sec:+.3f} s | matched {res.matched} "
+          f"({res.matched_frac*100:.0f}%) | median {res.median_resid_ms:.1f} ms | "
+          f"{res.prominence:.1f} sigma | {flag}")
+    return res.offset_sec
+
+
+def run_comparison(ppg_results, ref, offset):
     print("\n[Comparison]  watch RR candidates vs REMbo reference")
-    cmp = compare_watch_vs_reference(ppg_results, ref, offset="auto")
-    print(f"  best alignment offset = {cmp.offset_sec:+.0f} s | "
+    cmp = compare_watch_vs_reference(ppg_results, ref, offset=offset)
+    print(f"  applied sync offset = {cmp.offset_sec:+.3f} s | "
           f"{len(cmp.ranked)} scorable candidates")
     print(f"  ALL candidates by MAE (bpm)  [* = top {COMPARE.top_n}]:")
     for i, (cand, mae, n) in enumerate(cmp.ranked):
@@ -141,7 +169,8 @@ def main(argv=None):
 
     cmp = None
     if ref is not None and ppg_results:
-        cmp = run_comparison(ppg_results, ref)
+        offset = run_sync(edf_path, ppg_results, sig)
+        cmp = run_comparison(ppg_results, ref, offset)
 
     if not args.no_show:
         if ref is not None:

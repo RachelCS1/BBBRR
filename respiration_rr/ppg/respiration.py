@@ -56,8 +56,131 @@ def bp_rr_series(x, y, f_hp, f_lp, order, resample_fs=None):
     return grid_t, bp + mean_y
 
 
-def _breath_starts_envelope(env_x, env_y, prom_frac, min_dist=10):
-    """Breath-starts = prominence-filtered local maxima on a 10 Hz envelope."""
+def cubic_spline_rr_series(x, y, resample_fs=None):
+    """Resample an irregular (x,y) per-beat series to a uniform grid with a
+    CUBIC SPLINE and NO band-pass.
+
+    Alternative to bp_rr_series: the spline replaces BOTH the linear
+    interpolation AND the band-pass, so breath-starts are found directly on the
+    smooth spline curve. Returns (grid_x, spline_y) on the same 10 Hz grid.
+    """
+    if resample_fs is None:
+        resample_fs = PPG.rr_resample_fs
+    x = np.asarray(x, np.float64)
+    y = np.asarray(y, np.float64)
+    if x.size < 4:
+        return np.zeros(0), np.zeros(0)
+    # CubicSpline needs strictly-increasing, de-duplicated knots
+    order = np.argsort(x, kind="stable")
+    x, y = x[order], y[order]
+    keep = np.concatenate(([True], np.diff(x) > 0))
+    x, y = x[keep], y[keep]
+    if x.size < 4:
+        return np.zeros(0), np.zeros(0)
+    t_start, t_end = x[0], x[-1]
+    dt = 1.0 / resample_fs
+    n_grid = max(2, int(np.floor((t_end - t_start) / dt)) + 1)
+    grid_t = t_start + np.arange(n_grid) * dt
+    from scipy.interpolate import CubicSpline   # lazy: only this path needs scipy
+    y_grid = CubicSpline(x, y, extrapolate=False)(grid_t)
+    if np.isnan(y_grid).any():                 # guard FP edge just past x[-1]
+        nan = np.isnan(y_grid)
+        y_grid[nan] = np.interp(grid_t[nan], x, y)
+    return grid_t, y_grid
+
+
+def smoothing_spline_rr_series(x, y, resample_fs=None, lam=None, cutoff_hz=None):
+    """Resample an irregular (x,y) per-beat series to a uniform grid with a
+    PENALIZED SMOOTHING SPLINE and NO band-pass.
+
+    Unlike cubic_spline_rr_series (which interpolates every point and so keeps
+    the beat-to-beat jitter), this fits a spline that trades data-fidelity for
+    smoothness, denoising the jitter while preserving the respiratory shape —
+    less information loss than the linear+BP band-pass.
+
+    Smoothing is controlled by an effective -3 dB cutoff (cutoff_hz): the cubic
+    smoothing spline has transfer H(f)=1/(1+lam*(2*pi*f)^4), so lam=1/(2*pi*fc)^4.
+    The series is standardised (unit variance) before fitting so the cutoff↔lam
+    mapping is scale-invariant across params/channels. A raw `lam` overrides the
+    cutoff. Returns (grid_x, spline_y).
+    """
+    if resample_fs is None:
+        resample_fs = PPG.rr_resample_fs
+    x = np.asarray(x, np.float64)
+    y = np.asarray(y, np.float64)
+    if x.size < 4:
+        return np.zeros(0), np.zeros(0)
+    order = np.argsort(x, kind="stable")           # strictly-increasing, de-duped
+    x, y = x[order], y[order]
+    keep = np.concatenate(([True], np.diff(x) > 0))
+    x, y = x[keep], y[keep]
+    if x.size < 4:
+        return np.zeros(0), np.zeros(0)
+    t_start, t_end = x[0], x[-1]
+    dt = 1.0 / resample_fs
+    n_grid = max(2, int(np.floor((t_end - t_start) / dt)) + 1)
+    grid_t = t_start + np.arange(n_grid) * dt
+    if lam is None:                                # derive lam from the cutoff
+        fc = cutoff_hz if cutoff_hz else 1.0
+        lam = 1.0 / (2.0 * np.pi * fc) ** 4
+    mu, sd = y.mean(), y.std()                      # standardise -> scale-invariant lam
+    if sd == 0:
+        sd = 1.0
+    yn = (y - mu) / sd
+    from scipy.interpolate import make_smoothing_spline   # lazy: only this path
+    try:
+        spl = make_smoothing_spline(x, yn, lam=lam)
+    except Exception:
+        return np.zeros(0), np.zeros(0)
+    y_grid = np.asarray(spl(grid_t), np.float64) * sd + mu
+    if np.isnan(y_grid).any():                     # guard FP edge / extrapolation
+        nan = np.isnan(y_grid)
+        y_grid[nan] = np.interp(grid_t[nan], x, y)
+    return grid_t, y_grid
+
+
+def _filter_peaks_prominence_combined(env_y, raw_peaks, global_thr, frac_local, local_win):
+    """Prominence filter whose per-peak threshold must clear BOTH an (absolute)
+    global floor and a local-relative check:
+
+        thr_i = max(global_thr,  frac_local * local_range_i)
+
+    where local_range_i = max-min in a +-local_win-sample window around peak i.
+    Drops the largest-deficit peak iteratively until all survivors clear it."""
+    x = np.asarray(env_y, np.float64)
+    n = x.size
+    thr = {}
+    for p in raw_peaks:
+        lo = max(0, p - local_win)
+        hi = min(n, p + local_win + 1)
+        seg = x[lo:hi]
+        thr[p] = max(global_thr, frac_local * (seg.max() - seg.min()))
+    kept = list(raw_peaks)
+    while kept:
+        worst_k, worst_deficit = -1, np.inf
+        for k in range(len(kept)):
+            peak_val = x[kept[k]]
+            left_bound = 0 if k == 0 else kept[k - 1]
+            right_bound = n - 1 if k == len(kept) - 1 else kept[k + 1]
+            left_valley = x[left_bound:kept[k] + 1].min()
+            right_valley = x[kept[k]:right_bound + 1].min()
+            prom = peak_val - max(left_valley, right_valley)
+            deficit = prom - thr[kept[k]]
+            if deficit < worst_deficit:
+                worst_deficit = deficit
+                worst_k = k
+        if worst_deficit >= 0:
+            break
+        kept.pop(worst_k)
+    return kept
+
+
+def _breath_starts_envelope(env_x, env_y, prom_frac, min_dist=10, cfg=None):
+    """Breath-starts = prominence-filtered local maxima on a 10 Hz envelope.
+
+    The global-floor prominence is prom_frac * global range. When
+    cfg.rr_local_prom_win_sec and rr_local_prom_frac are set, a peak must ALSO
+    clear frac_local * local range (see _filter_peaks_prominence_combined)."""
     if env_y.size < 4:
         return np.array([], dtype=int)
     raw_peaks = []
@@ -68,8 +191,21 @@ def _breath_starts_envelope(env_x, env_y, prom_frac, min_dist=10):
             last = i
     if not raw_peaks:
         return np.array([], dtype=int)
-    rng = env_y.max() - env_y.min()
-    kept = filter_peaks_by_prominence(env_y, raw_peaks, rng * prom_frac)
+    x = np.asarray(env_y, np.float64)
+    rng = x.max() - x.min()
+    global_thr = prom_frac * rng                        # manual per-variant floor
+
+    # optional local-relative check
+    local_win = local_frac = None
+    if cfg is not None:
+        w = getattr(cfg, "rr_local_prom_win_sec", None)
+        local_win = int(round(w * cfg.rr_resample_fs)) if w else None
+        local_frac = getattr(cfg, "rr_local_prom_frac", None)
+
+    if local_win and local_win > 0 and local_frac:
+        kept = _filter_peaks_prominence_combined(x, raw_peaks, global_thr, local_frac, int(local_win))
+    else:
+        kept = filter_peaks_by_prominence(x, raw_peaks, global_thr)
     return np.asarray(kept, dtype=int)
 
 
@@ -213,6 +349,32 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
     # ---- Param 3: AUC (per-beat area) ----
     params["AUC"] = _make_param("AUC", sa.auc_x, sa.auc_y, cfg, prom)
 
+    # ---- Spline variants of RSA/RIIV/AUC (comparison alternatives) ----
+    # Same per-beat source series and same breath-start/RR logic as the linear
+    # params; only the envelope construction differs. Additive only.
+    prom_spl = getattr(cfg, "rr_spline_prominence", None)
+    if prom_spl is None:                           # fall back to the shared prominence
+        prom_spl = prom
+    val = getattr(cfg, "rr_spline_use_valleys", False)
+
+    # (a) interpolating cubic spline (passes through every point, NO band-pass)
+    if getattr(cfg, "rr_spline_enabled", False):
+        params["RSA_spline"] = _make_param_spline("RSA_spline", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom_spl, val)
+        params["RIIV_spline"] = _make_param_spline("RIIV_spline", sa.maxht_x, sa.maxht_y, cfg, prom_spl, val)
+        params["AUC_spline"] = _make_param_spline("AUC_spline", sa.auc_x, sa.auc_y, cfg, prom_spl, val)
+
+    # (b) smoothing spline (penalized fit: denoises the beat-to-beat jitter but
+    #     keeps the respiratory shape — less information loss than linear+BP)
+    if getattr(cfg, "rr_ssp_enabled", False):
+        lam = getattr(cfg, "rr_ssp_lam", None)
+        cut = getattr(cfg, "rr_ssp_cutoff_hz", 1.0)
+        prom_ssp = getattr(cfg, "rr_ssp_prominence", None)
+        if prom_ssp is None:                       # fall back to the spline prominence
+            prom_ssp = prom_spl
+        params["RSA_ssp"] = _make_param_ssp("RSA_ssp", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom_ssp, val, lam, cut)
+        params["RIIV_ssp"] = _make_param_ssp("RIIV_ssp", sa.maxht_x, sa.maxht_y, cfg, prom_ssp, val, lam, cut)
+        params["AUC_ssp"] = _make_param_ssp("AUC_ssp", sa.auc_x, sa.auc_y, cfg, prom_ssp, val, lam, cut)
+
     # ---- Param 4: LP/BW (raw channel band-passed at its OWN band, full rate) ----
     lp_trace = bandpass_filter(x, fs, cfg.bw_band_low_hz, cfg.bw_band_high_hz,
                                cfg.bw_filter_order)["filtered"]
@@ -302,7 +464,46 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
 def _make_param(name, x, y, cfg, prom):
     """Build an RRParam for the resampled-envelope path (RSA/RIIV/AUC)."""
     env_x, env_y = bp_rr_series(x, y, cfg.rr_band_low_hz, cfg.rr_band_high_hz, cfg.rr_filter_order)
-    bs = _breath_starts_envelope(env_x, env_y, prom) if env_y.size else np.array([], int)
+    bs = _breath_starts_envelope(env_x, env_y, prom, cfg=cfg) if env_y.size else np.array([], int)
+    bs_t = env_x[bs] if bs.size else np.zeros(0)
+    rr_t, rr = _rr_from_starts(bs_t)
+    return RRParam(name, series_x=np.asarray(x), series_y=np.asarray(y),
+                   env_x=env_x, env_y=env_y, bs_times=bs_t, rr_time=rr_t, rr_bpm=rr)
+
+
+def _make_param_spline(name, x, y, cfg, prom, use_valleys=False):
+    """Build an RRParam via the cubic-spline envelope path (RSA/RIIV/AUC variant).
+
+    Identical to _make_param except the envelope is a cubic spline through the
+    per-beat series (cubic_spline_rr_series) instead of linear-interp + band-pass.
+    use_valleys=True detects VALLEYS (minima) instead of peaks by running the same
+    detector on the inverted envelope; breath markers still reference env_y.
+    """
+    env_x, env_y = cubic_spline_rr_series(x, y, cfg.rr_resample_fs)
+    if env_y.size:
+        detect_on = -env_y if use_valleys else env_y
+        bs = _breath_starts_envelope(env_x, detect_on, prom, cfg=cfg)
+    else:
+        bs = np.array([], int)
+    bs_t = env_x[bs] if bs.size else np.zeros(0)
+    rr_t, rr = _rr_from_starts(bs_t)
+    return RRParam(name, series_x=np.asarray(x), series_y=np.asarray(y),
+                   env_x=env_x, env_y=env_y, bs_times=bs_t, rr_time=rr_t, rr_bpm=rr)
+
+
+def _make_param_ssp(name, x, y, cfg, prom, use_valleys=False, lam=None, cutoff_hz=None):
+    """Build an RRParam via the SMOOTHING-spline envelope path (RSA/RIIV/AUC).
+
+    Same breath-start + RR logic as _make_param_spline, but the envelope is a
+    penalized smoothing spline (smoothing_spline_rr_series) so the beat-to-beat
+    jitter is denoised while the respiratory shape is preserved.
+    """
+    env_x, env_y = smoothing_spline_rr_series(x, y, cfg.rr_resample_fs, lam, cutoff_hz)
+    if env_y.size:
+        detect_on = -env_y if use_valleys else env_y
+        bs = _breath_starts_envelope(env_x, detect_on, prom, cfg=cfg)
+    else:
+        bs = np.array([], int)
     bs_t = env_x[bs] if bs.size else np.zeros(0)
     rr_t, rr = _rr_from_starts(bs_t)
     return RRParam(name, series_x=np.asarray(x), series_y=np.asarray(y),

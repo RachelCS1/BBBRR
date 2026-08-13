@@ -9,8 +9,9 @@ picture, from raw trace to final respiration rate, in six figure groups:
   2. Baseline-corrected signal           (with SS / MSD / SE fiducials marked)
   3. Per-parameter feature series        (one panel each: RSA, RIIV/AMP, AUC, LP)
   4. Respiration envelopes + BS peaks    (breath-start detection on each envelope)
-  5. Per-parameter spectrograms          (STFT + respiration ridge, one each)
-  6. Final respiration rate (RR)         (bpm from each parameter, overlaid)
+  5. Spline vs linear+BP RR              (RSA/RIIV/AUC: RR from each method's peaks)
+  6. Per-parameter spectrograms          (STFT + respiration ridge, one each)
+  7. Final respiration rate (RR)         (bpm from each parameter, overlaid)
 
 It reuses the exact same pipeline as main.py (analyze_ppg) so what you see is
 what the analyzer computes. Algorithm knobs live in respiration_rr/settings.py.
@@ -279,7 +280,8 @@ def main(argv=None):
                                          move_regions=sig.move_regions, window=window)),
             ("params",       plot_param_series(name, res, window=window)),
             ("envelopes_bs", viz.plot_ppg_channel(res)),           # item 4 (existing)
-            ("spectrograms", viz.plot_ppg_spectrograms(res)),      # item 5 (existing)
+            ("spline_vs_bp", viz.plot_spline_comparison(res, window=window)),  # item 5 (spline compare)
+            ("spectrograms", viz.plot_ppg_spectrograms(res)),      # item 6 (existing)
             ("final_rr",     plot_final_rr(name, res, window=window)),
         ]
         for stem, fig in figs:

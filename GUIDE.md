@@ -23,8 +23,9 @@ with `README.md` (quick start) and `respiration_rr/settings.py` (all knobs).
                                    respiration_rr.viz  (matplotlib figures) ◀────┘
 ```
 
-`main.py` wires all three together. Everything reads its parameters from
-`settings.py` (`REFERENCE`, `PPG`, `COMPARE`).
+`main.py` wires all three together, and time-aligns the watch to the REMbo via the
+IR-PPG MSD sync (`respiration_rr.sync`) before the comparison. Everything reads its
+parameters from `settings.py` (`REFERENCE`, `PPG`, `COMPARE`, `SYNC`).
 
 ---
 
@@ -57,7 +58,7 @@ prepare_watch(watch)                         → WatchSignals(.time @1024Hz, .ch
         ▼
 analyze_ppg(channels, time, fs)              → { "IR": PPGChannelResult, "Green": …, … }
         │   per channel: analyze_ppg_channel
-        │     bandpass_filter (0.5–4 Hz)  → detect_beats → refine_ss_by_derivative
+        │     bandpass_filter (0.5–8 Hz)  → detect_beats → refine_ss_by_derivative
         │     remove_dc_beat_aligned      → compute_systolic_analysis (SS/SE/MSD/AUC/maxH)
         │     build 4 params → bp_rr_series → breath-starts → RR
         │     compute_spectrogram + ridge_rr
@@ -65,12 +66,23 @@ analyze_ppg(channels, time, fs)              → { "IR": PPGChannelResult, "Gree
 PPGChannelResult → .params{"RSA","RIIV","AUC","LP"}→RRParam, .ridge_rr, .ss_idx, …
 ```
 
+### Time sync (IR-PPG MSD) — `respiration_rr/sync.py`
+```
+watch IR MSD (already from analyze_ppg)  +  REMbo "Pulse Wave"
+        │   msd_series      (same beat pipeline → MSD fiducial times, both signals)
+        │   match_offset    (nearest-neighbour MSD-time match: coarse → fine → clean-window lock)
+        ▼
+offset_from_msd → SyncResult(.offset_sec, .matched, .prominence, .low_confidence, …)
+        │   offset = seconds to ADD to the watch clock to reach the REMbo clock
+```
+The shared finger pulse is respiration-independent, so this offset does NOT depend
+on the RR method being scored. `main.py` computes it and passes it to the comparison.
+
 ### Comparison (Tool 3) — `respiration_rr/compare/compare.py`
 ```
-compare_watch_vs_reference(ppg_results, ref_result, offset="auto")
+compare_watch_vs_reference(ppg_results, ref_result, offset=sync_offset)
         │   collect_watch_candidates  (every param×channel + ridge → Candidate)
-        │   auto_align_offset         (scan offsets, minimise best MAE)
-        │   rank_candidates           (MAE vs reference RR over overlap)
+        │   rank_candidates           (shift each candidate by offset, MAE vs reference RR over overlap)
         ▼
 CompareResult → .ranked[(Candidate, mae, n)], .offset_sec, .ref_time/ref_rr
 ```
@@ -135,12 +147,24 @@ CompareResult → .ranked[(Candidate, mae, n)], .offset_sec, .ref_time/ref_rr
 ### `respiration_rr.compare`
 | Function | Signature | Returns |
 |---|---|---|
-| `compare_watch_vs_reference` | `(ppg_results, ref_result, offset="auto", top_n=None, params=(…))` | `CompareResult` |
+| `compare_watch_vs_reference` | `(ppg_results, ref_result, offset=0.0, top_n=None, params=(…))` | `CompareResult` |
 | `collect_watch_candidates` | `(ppg_results, params=(…))` | `list[Candidate]` |
 | `score_candidate` | `(cand, ref_time, ref_rr, offset, min_overlap_sec=None)` | `(mae, n_overlap)` |
-| `auto_align_offset` | `(cands, ref_time, ref_rr, search_range=None, step=1.0)` | `(best_offset, best_mae)` |
 
 `CompareResult`: `.offset_sec, .ref_time, .ref_rr, .ranked[(Candidate, mae, n)], .candidates`.
+The `offset` is the IR-PPG MSD sync offset (see below); `main.py` supplies it.
+
+### `respiration_rr.sync` (IR-PPG MSD time sync)
+| Function | Signature | Returns |
+|---|---|---|
+| `compute_offset` | `(watch_ir, watch_fs, rembo_pw, rembo_fs, params=None, try_polarity=True, cfg=PPG)` | `SyncResult` (from RAW signals; keeps watch diagnostics — used by the inspector) |
+| `offset_from_msd` | `(watch_msd_t, rembo_pw, rembo_fs, params=None, try_polarity=True, cfg=PPG)` | `SyncResult` (light path: watch MSD already computed — used by `main.py`) |
+| `msd_series` | `(raw, raw_fs, label, invert, cfg=PPG)` | `MsdSeries(.t, .filtered, .msd_t, …)` |
+| `match_offset` | `(watch_t, rembo_t, p)` | dict: `offset, matched, prominence, ctau/cn, ftau/fn, residuals_ms, window` |
+| `read_rembo_pulse_wave` | `(edf_path, cfg=REFERENCE)` | `(signal, fs, channel_name)` |
+
+`SyncResult`: `.offset_sec, .matched, .matched_frac, .median_resid_ms, .prominence, .overlap_sec, .polarity, .low_confidence, .reason, + diagnostics`.
+Parameters live in `settings.SYNC` (`max_offset_sec`, `coarse_step_sec`, `fine_step_sec`, `match_tol_sec`, `min_overlap_sec`, `min_matched`, `window_sec`, `min_prominence`).
 
 ### `respiration_rr.viz`
 `plot_reference(ref)`, `plot_ppg_channel(res)`, `plot_ppg_overview(ppg_results)`,
@@ -171,8 +195,23 @@ watch = read_watch_csv("Data/Exp1/recordings data/001/rt_flow_1112_1782377641000
 ws = prepare_watch(watch)
 ppg = analyze_ppg(ws.channels, ws.time, ws.fs)
 
-cmp = compare_watch_vs_reference(ppg, ref, offset="auto")
+# IR-PPG MSD time sync: offset to add to the watch clock to reach the REMbo clock
+from respiration_rr.sync import offset_from_msd, read_rembo_pulse_wave
+import numpy as np
+pw, pwfs, _ = read_rembo_pulse_wave("Data/Exp1/recordings data/001/1.edf")
+watch_msd_t = ws.time[np.asarray(ppg["IR"].msd_idx, int)]
+offset = offset_from_msd(watch_msd_t, pw, pwfs).offset_sec
+
+cmp = compare_watch_vs_reference(ppg, ref, offset=offset)
 viz.plot_comparison(cmp); viz.show_all()
+```
+
+**Inspect the time-sync step by step (a figure per stage — raw → MSD → search → result):**
+```bash
+py main_sync.py --recording Exp1/001 --show        # open the 6 stage windows
+py main_sync.py --recording Exp1/001               # or save them as PNGs
+py main_sync.py --edf a.edf --watch b.csv          # explicit files
+py main_sync.py --recording Exp2/003 --minutes 10  # cap length for speed
 ```
 
 **Get one channel's RR from one parameter:**
@@ -232,6 +271,7 @@ print(ref.metrics)     # MAE, RMSE, %≤3bpm, Bland-Altman pairs
 | `bpRRSeries` / `filterPeaksByProminence` + 4-param logic | `ppg/respiration.py` |
 | `computeSpectrogram` (+ ridge) | `ppg/spectrogram.py` |
 | Combined `renderSimCompare` / candidate scoring | `compare/compare.py` |
+| *(new — no HTML origin)* IR-PPG MSD time sync | `sync.py` + `main_sync.py` (step-by-step inspector) |
 
 Docstrings in each file cite the original HTML line numbers.
 ```

@@ -11,17 +11,24 @@ Python port of the three HTML respiration-rate tools in `../HTML's/`:
 ## Run it
 
 ```bash
-py Code/main.py                       # defaults to Data/Exp1/recordings data/001
-py Code/main.py --recording "Data/Exp1/recordings data/003"
-py Code/main.py --edf path/to/1.edf --watch path/to/rt_flow.csv
-py Code/main.py --no-show             # print summary only, no figure windows
+py main.py                            # defaults to Data/Exp1/recordings data/001
+py main.py --recording "Data/Exp1/recordings data/003"
+py main.py --edf path/to/1.edf --watch path/to/rt_flow.csv
+py main.py --no-show                  # print summary only, no figure windows
 ```
 
 Requires: `numpy`, `pandas`, `scipy`, `matplotlib`, `PyWavelets` (`py -m pip install numpy pandas scipy matplotlib PyWavelets`).
 
 `main.py` loads a recording, runs the reference analysis (EDF), the watch PPG
-analysis (rt_flow CSV), and the comparison, prints a summary, and opens
-matplotlib windows mirroring the HTML graphs.
+analysis (rt_flow CSV), **time-aligns the watch to the REMbo via the IR-PPG MSD
+sync**, then runs the comparison, prints a summary, and opens matplotlib windows
+mirroring the HTML graphs.
+
+**Inspect the time-sync, stage by stage:**
+```bash
+py main_sync.py --recording Exp1/001 --show   # 6 stage figures: raw → MSD → search → result
+py main_sync.py --recording Exp1/001          # same, saved as PNGs
+```
 
 ## The four respiration parameters (watch PPG)
 
@@ -41,8 +48,8 @@ A fifth estimator — the **spectral ridge** — is the dominant STFT frequency 
 ## Tuning parameters
 
 **All tunable parameters live in `respiration_rr/settings.py`** — the single
-place mirroring the HTML settings panels (`REFERENCE`, `PPG`, `COMPARE`). Edit a
-value there; every module reads from it.
+place mirroring the HTML settings panels (`REFERENCE`, `PPG`, `COMPARE`, `SYNC`).
+Edit a value there; every module reads from it.
 
 ## Package layout
 
@@ -54,7 +61,10 @@ respiration_rr/
   reference/          # airflow zero-crossing RR + I:E + RRV + agreement (Tool 2)
   ppg/                # dsp, beats, systolic, respiration (4 params), spectrogram (Tool 1)
   compare/            # cross-device ranking by MAE (Tool 3)
+  sync.py             # IR-PPG MSD watch<->REMbo time sync (feeds the comparison offset)
   viz/                # matplotlib figures
+main.py               # full pipeline (reference + watch + sync + comparison)
+main_sync.py          # step-by-step inspector for the time sync
 ```
 
 ## Validation (Data/Exp1/001)
@@ -62,8 +72,9 @@ respiration_rr/
 - Reference EDF: 35 breaths, mean RR 13.4 bpm (dips to ~8 bpm during the
   slow-breathing minute), I:E ≈ 0.83.
 - Watch PPG: four params + ridge computed on all four channels.
-- Comparison: best candidate **IR/RIIV, MAE 0.89 bpm** vs the reference
-  (offset +9 s), IR/AUC 1.45, IR/Ridge 1.51.
+- IR-PPG MSD sync: offset **+10.194 s** (179/179 beats matched, 11.7 ms median, 9σ).
+- Comparison (at that offset): best candidates **Red/Ridge MAE 0.83 bpm**,
+  IR/Ridge 0.84, IR/RSA_ssp 0.97.
 
 ## Scope notes
 
