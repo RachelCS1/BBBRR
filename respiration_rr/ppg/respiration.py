@@ -225,14 +225,40 @@ def _breath_starts_raw(sig, fs, prom_frac):
     return np.asarray(filter_peaks_by_prominence(sig, raw_peaks, rng * prom_frac), dtype=int)
 
 
-def _rr_from_starts(bs_times):
-    """RR (bpm) at each mid-interval between consecutive breath-starts."""
+def _interval_hits_noise(t0, t1, move_regions):
+    """True if the interval [t0, t1] overlaps any (start, end) movement region."""
+    for (s, e) in move_regions or []:
+        if t0 <= e and t1 >= s:
+            return True
+    return False
+
+
+def _rr_from_starts(bs_times, move_regions=None, valid_bpm=None):
+    """RR (bpm) at each mid-interval between consecutive breath-starts.
+
+    move_regions : if given, any interval whose span [start, end] overlaps a
+                   movement/noise region is dropped. The beats there were removed
+                   as noise, so the envelope (linear/spline/ssp) merely
+                   interpolated across the gap — a breath-start straddling it is
+                   not a real breath. This matches the BWlegacy/BWbank gating.
+    valid_bpm    : optional (lo, hi) clamp on the surviving RR values.
+
+    NOTE: only the emitted RR is gated; bs_times (the detected breath-starts) are
+    returned untouched by the caller, so they still plot inside the noise region.
+    """
     bs_times = np.asarray(bs_times, np.float64)
     if bs_times.size < 2:
         return np.zeros(0), np.zeros(0)
     dt = np.diff(bs_times)
     ok = dt > 0
     rr = np.where(ok, 60.0 / np.where(ok, dt, 1.0), np.nan)
+    if move_regions:
+        for i in range(dt.size):
+            if ok[i] and _interval_hits_noise(bs_times[i], bs_times[i + 1], move_regions):
+                ok[i] = False
+    if valid_bpm:
+        lo, hi = valid_bpm
+        ok &= (rr >= lo) & (rr <= hi)
     mid = (bs_times[:-1] + bs_times[1:]) / 2
     return mid[ok], rr[ok]
 
@@ -273,6 +299,7 @@ class PPGChannelResult:
     params: dict = field(default_factory=dict)     # name -> RRParam
     ridge_time: np.ndarray = None
     ridge_rr: np.ndarray = None
+    move_regions: list = field(default_factory=list)  # (start, end) noise regions (for viz + gating)
 
     def mean_rr(self, param):
         p = self.params.get(param)
@@ -341,13 +368,13 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
         if rr_ms < rr_min_ms or rr_ms > rr_max_ms:
             continue
         rsa_x.append(t[i1]); rsa_y.append(rr_ms)
-    params["RSA"] = _make_param("RSA", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom)
+    params["RSA"] = _make_param("RSA", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom, move_regions)
 
     # ---- Param 2: RIIV (per-beat max height) ----
-    params["RIIV"] = _make_param("RIIV", sa.maxht_x, sa.maxht_y, cfg, prom)
+    params["RIIV"] = _make_param("RIIV", sa.maxht_x, sa.maxht_y, cfg, prom, move_regions)
 
     # ---- Param 3: AUC (per-beat area) ----
-    params["AUC"] = _make_param("AUC", sa.auc_x, sa.auc_y, cfg, prom)
+    params["AUC"] = _make_param("AUC", sa.auc_x, sa.auc_y, cfg, prom, move_regions)
 
     # ---- Spline variants of RSA/RIIV/AUC (comparison alternatives) ----
     # Same per-beat source series and same breath-start/RR logic as the linear
@@ -359,9 +386,9 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
 
     # (a) interpolating cubic spline (passes through every point, NO band-pass)
     if getattr(cfg, "rr_spline_enabled", False):
-        params["RSA_spline"] = _make_param_spline("RSA_spline", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom_spl, val)
-        params["RIIV_spline"] = _make_param_spline("RIIV_spline", sa.maxht_x, sa.maxht_y, cfg, prom_spl, val)
-        params["AUC_spline"] = _make_param_spline("AUC_spline", sa.auc_x, sa.auc_y, cfg, prom_spl, val)
+        params["RSA_spline"] = _make_param_spline("RSA_spline", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom_spl, val, move_regions)
+        params["RIIV_spline"] = _make_param_spline("RIIV_spline", sa.maxht_x, sa.maxht_y, cfg, prom_spl, val, move_regions)
+        params["AUC_spline"] = _make_param_spline("AUC_spline", sa.auc_x, sa.auc_y, cfg, prom_spl, val, move_regions)
 
     # (b) smoothing spline (penalized fit: denoises the beat-to-beat jitter but
     #     keeps the respiratory shape — less information loss than linear+BP)
@@ -371,16 +398,16 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
         prom_ssp = getattr(cfg, "rr_ssp_prominence", None)
         if prom_ssp is None:                       # fall back to the spline prominence
             prom_ssp = prom_spl
-        params["RSA_ssp"] = _make_param_ssp("RSA_ssp", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom_ssp, val, lam, cut)
-        params["RIIV_ssp"] = _make_param_ssp("RIIV_ssp", sa.maxht_x, sa.maxht_y, cfg, prom_ssp, val, lam, cut)
-        params["AUC_ssp"] = _make_param_ssp("AUC_ssp", sa.auc_x, sa.auc_y, cfg, prom_ssp, val, lam, cut)
+        params["RSA_ssp"] = _make_param_ssp("RSA_ssp", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom_ssp, val, lam, cut, move_regions)
+        params["RIIV_ssp"] = _make_param_ssp("RIIV_ssp", sa.maxht_x, sa.maxht_y, cfg, prom_ssp, val, lam, cut, move_regions)
+        params["AUC_ssp"] = _make_param_ssp("AUC_ssp", sa.auc_x, sa.auc_y, cfg, prom_ssp, val, lam, cut, move_regions)
 
     # ---- Param 4: LP/BW (raw channel band-passed at its OWN band, full rate) ----
     lp_trace = bandpass_filter(x, fs, cfg.bw_band_low_hz, cfg.bw_band_high_hz,
                                cfg.bw_filter_order)["filtered"]
     bs_lp = _breath_starts_raw(lp_trace, fs, prom)
     bs_lp_t = t[bs_lp] if bs_lp.size else np.zeros(0)
-    lp_rr_t, lp_rr = _rr_from_starts(bs_lp_t)
+    lp_rr_t, lp_rr = _rr_from_starts(bs_lp_t, *_rr_gate_args(cfg, move_regions))
     params["LP"] = RRParam("LP", series_x=t, series_y=lp_trace,
                            env_x=t, env_y=lp_trace,
                            bs_times=bs_lp_t, rr_time=lp_rr_t, rr_bpm=lp_rr)
@@ -457,21 +484,30 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
     return PPGChannelResult(
         channel=channel, fs=fs, filtered=bp, bc=bc,
         ss_idx=ss, se_idx=sa.se_idx, msd_idx=sa.msd_idx, params=params,
-        ridge_time=ridge_t, ridge_rr=ridge_v,
+        ridge_time=ridge_t, ridge_rr=ridge_v, move_regions=list(move_regions or []),
     )
 
 
-def _make_param(name, x, y, cfg, prom):
+def _rr_gate_args(cfg, move_regions):
+    """Resolve the (move_regions, valid_bpm) gate arguments for _rr_from_starts
+    from settings — shared by all envelope variants so the noise gate is applied
+    identically to linear+BP, cubic spline, smoothing spline and LP."""
+    mr = move_regions if getattr(cfg, "rr_reject_noise_spanning", False) else None
+    vb = getattr(cfg, "rr_valid_bpm", None)
+    return mr, vb
+
+
+def _make_param(name, x, y, cfg, prom, move_regions=None):
     """Build an RRParam for the resampled-envelope path (RSA/RIIV/AUC)."""
     env_x, env_y = bp_rr_series(x, y, cfg.rr_band_low_hz, cfg.rr_band_high_hz, cfg.rr_filter_order)
     bs = _breath_starts_envelope(env_x, env_y, prom, cfg=cfg) if env_y.size else np.array([], int)
     bs_t = env_x[bs] if bs.size else np.zeros(0)
-    rr_t, rr = _rr_from_starts(bs_t)
+    rr_t, rr = _rr_from_starts(bs_t, *_rr_gate_args(cfg, move_regions))
     return RRParam(name, series_x=np.asarray(x), series_y=np.asarray(y),
                    env_x=env_x, env_y=env_y, bs_times=bs_t, rr_time=rr_t, rr_bpm=rr)
 
 
-def _make_param_spline(name, x, y, cfg, prom, use_valleys=False):
+def _make_param_spline(name, x, y, cfg, prom, use_valleys=False, move_regions=None):
     """Build an RRParam via the cubic-spline envelope path (RSA/RIIV/AUC variant).
 
     Identical to _make_param except the envelope is a cubic spline through the
@@ -486,12 +522,13 @@ def _make_param_spline(name, x, y, cfg, prom, use_valleys=False):
     else:
         bs = np.array([], int)
     bs_t = env_x[bs] if bs.size else np.zeros(0)
-    rr_t, rr = _rr_from_starts(bs_t)
+    rr_t, rr = _rr_from_starts(bs_t, *_rr_gate_args(cfg, move_regions))
     return RRParam(name, series_x=np.asarray(x), series_y=np.asarray(y),
                    env_x=env_x, env_y=env_y, bs_times=bs_t, rr_time=rr_t, rr_bpm=rr)
 
 
-def _make_param_ssp(name, x, y, cfg, prom, use_valleys=False, lam=None, cutoff_hz=None):
+def _make_param_ssp(name, x, y, cfg, prom, use_valleys=False, lam=None, cutoff_hz=None,
+                    move_regions=None):
     """Build an RRParam via the SMOOTHING-spline envelope path (RSA/RIIV/AUC).
 
     Same breath-start + RR logic as _make_param_spline, but the envelope is a
@@ -505,7 +542,7 @@ def _make_param_ssp(name, x, y, cfg, prom, use_valleys=False, lam=None, cutoff_h
     else:
         bs = np.array([], int)
     bs_t = env_x[bs] if bs.size else np.zeros(0)
-    rr_t, rr = _rr_from_starts(bs_t)
+    rr_t, rr = _rr_from_starts(bs_t, *_rr_gate_args(cfg, move_regions))
     return RRParam(name, series_x=np.asarray(x), series_y=np.asarray(y),
                    env_x=env_x, env_y=env_y, bs_times=bs_t, rr_time=rr_t, rr_bpm=rr)
 

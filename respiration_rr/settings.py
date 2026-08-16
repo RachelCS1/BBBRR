@@ -200,6 +200,23 @@ class PPGSettings:
     # None/0 for global-only prominence (original behaviour).
     rr_local_prom_win_sec: float = 8.0   # local window (s); None/0 -> global only
     rr_local_prom_frac: float = 0.2      # local-relative fraction f_l; None/0 -> global only
+    # ---- Noise-region gating on the FINAL RR (RSA/RIIV/AUC[/spline/ssp] + LP) ----
+    # In a movement/noise region the beats are dropped, so the per-beat series has
+    # a hole that the envelope (linear+BP / cubic spline / smoothing spline) then
+    # silently interpolates across. A breath-start straddling that gap emits a
+    # spurious (usually very low) RR that is purely an artefact of the gap fill.
+    # These gates drop any breath-to-breath interval whose span overlaps a
+    # movement region (the same treatment BWlegacy/BWbank already apply), and
+    # optionally clamp the surviving RR to a plausible band. IMPORTANT: bs_times
+    # are NOT gated — the detected breath-starts still plot (so you can SEE that a
+    # peak was found in the noise), only the emitted RR series gets the hole.
+    # Default: ONLY the noise-spanning gate is on, so the sole behaviour change vs
+    # the original is that RR intervals overlapping a noise region are dropped.
+    # rr_valid_bpm is an opt-in extra clamp (set a (lo, hi) tuple to enable). To
+    # reproduce the pre-gate output byte-for-byte set rr_reject_noise_spanning=False
+    # (rr_valid_bpm is already None).
+    rr_reject_noise_spanning: bool = True   # drop RR intervals overlapping a move region
+    rr_valid_bpm: tuple = None              # optional (lo, hi) clamp on final RR; None -> off
     rr_resample_fs: float = 10.0    # not in UI: FS_RESAMP in bpRRSeries
     rr_band_low_hz: float = 0.1     # "HP Cutoff RR (Hz)"  (paramHP_RR)
     rr_band_high_hz: float = 1.0    # "LP Cutoff RR (Hz)"  (paramLP_RR)

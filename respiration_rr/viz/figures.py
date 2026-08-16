@@ -26,6 +26,15 @@ def _shade_noise(ax, regions, color="#ef4444", alpha=0.10):
         ax.axvspan(s, e, color=color, alpha=alpha, lw=0)
 
 
+def _in_noise_mask(times, regions):
+    """Boolean mask: True where a time falls inside any (start, end) noise region."""
+    times = np.asarray(times, np.float64)
+    mask = np.zeros(times.size, dtype=bool)
+    for (s, e) in regions or []:
+        mask |= (times >= s) & (times <= e)
+    return mask
+
+
 def plot_reference(ref, title="Reference (REMbo / Poly) — airflow RR"):
     """Four-panel reference figure: signal+breaths, RR, RRV, I:E."""
     fig, axes = plt.subplots(4, 1, figsize=(13, 9), sharex=True)
@@ -104,7 +113,13 @@ def plot_ppg_channel(res, title=None, mae_by_param=None):
             ax.plot(pr.env_x, pr.env_y, color=col, lw=0.8, label=f"{pname} envelope")
         if pr.bs_times.size:
             ymark = np.interp(pr.bs_times, pr.env_x, pr.env_y) if pr.env_x.size else np.zeros_like(pr.bs_times)
-            ax.plot(pr.bs_times, ymark, "v", color="#fbbf24", ms=6, label="Breath start")
+            in_noise = _in_noise_mask(pr.bs_times, res.move_regions)
+            ax.plot(pr.bs_times[~in_noise], ymark[~in_noise], "v", color="#fbbf24", ms=6,
+                    label="Breath start")
+            if in_noise.any():                       # detected inside noise -> excluded from RR
+                ax.plot(pr.bs_times[in_noise], ymark[in_noise], "v", mfc="none",
+                        mec="#9ca3af", ms=6, label="Breath start (in noise, excluded)")
+        _shade_noise(ax, res.move_regions)
         ax.set_ylabel(pname)
         mean_rr = np.nanmean(pr.rr_bpm) if pr.rr_bpm.size else float("nan")
         extra = ""
@@ -161,6 +176,7 @@ def plot_spline_comparison(res, title=None, window=None, mae_by_param=None):
         _line(ax, res.params.get(base), base, "o-", "linear+BP")
         _line(ax, res.params.get(f"{base}_spline"), f"{base}_spline", "s--", "spline")
         _line(ax, res.params.get(f"{base}_ssp"), f"{base}_ssp", "d:", "smoothing")
+        _shade_noise(ax, res.move_regions)      # RR holes should line up with these
         ax.set_ylabel(f"{base}\nRR (bpm)")
         ax.set_title(f"{base} — RR from peaks: linear+BP (○ solid) vs spline (□ dashed) "
                      f"vs smoothing (◇ dotted)", fontsize=9, loc="left")
@@ -205,6 +221,7 @@ def plot_ppg_spectrograms(res, title=None, max_bpm=54):
             mean_ridge = np.nanmean(pr.ridge_rr)
         else:
             mean_ridge = float("nan")
+        _shade_noise(ax, res.move_regions, alpha=0.18)
         ax.set_ylabel(f"{pname}\n(bpm)")
         ax.set_ylim(0, max_bpm)
         ax.set_title(f"{pname} spectrogram — ridge mean RR = {mean_ridge:.1f} bpm",
