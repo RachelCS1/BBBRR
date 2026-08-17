@@ -183,7 +183,7 @@ class PPGSettings:
     # respiration (<=~0.8 Hz ≈ 50 bpm) and smooth faster beat-to-beat jitter.
     # Lower cutoff = smoother. Derived to lam = 1/(2*pi*fc)^4 for the cubic
     # smoothing spline. Set rr_ssp_lam to override with a raw lambda instead.
-    rr_ssp_cutoff_hz: float = 0.5
+    rr_ssp_cutoff_hz: float = 0.45
     rr_ssp_lam: float = None        # raw smoothing lambda; None -> derive from rr_ssp_cutoff_hz
     # Breath-start prominence for the smoothing-spline variants ONLY.
     # None -> reuse rr_spline_prominence (which itself falls back to
@@ -198,7 +198,7 @@ class PPGSettings:
     # bites when rr_local_prom_frac exceeds the global fraction, rejecting peaks
     # that pass the absolute floor but don't stand out locally. Set either to
     # None/0 for global-only prominence (original behaviour).
-    rr_local_prom_win_sec: float = 8.0   # local window (s); None/0 -> global only
+    rr_local_prom_win_sec: float = 4.0   # local window (s); None/0 -> global only
     rr_local_prom_frac: float = 0.2      # local-relative fraction f_l; None/0 -> global only
     # ---- Noise-region gating on the FINAL RR (RSA/RIIV/AUC[/spline/ssp] + LP) ----
     # In a movement/noise region the beats are dropped, so the per-beat series has
@@ -217,6 +217,24 @@ class PPGSettings:
     # (rr_valid_bpm is already None).
     rr_reject_noise_spanning: bool = True   # drop RR intervals overlapping a move region
     rr_valid_bpm: tuple = None              # optional (lo, hi) clamp on final RR; None -> off
+    # The breath-start prominence floor is prom_frac * amplitude range. A high-
+    # amplitude noise burst inflates that range (max-min), pushing the floor so
+    # high that real breaths elsewhere fall below it and almost nothing is
+    # detected. When True, the range is measured from noise-free samples only
+    # (via move_regions), so a noise spike no longer starves peak detection.
+    # No effect when there are no move_regions -> output unchanged.
+    rr_prominence_ignore_noise: bool = True
+    # Robust prominence range: scale the floor by a robust spread (IQR) instead of
+    # max-min. max-min is inflated by ANY single extreme sample — a startup/edge
+    # transient or a spline overshoot that sits OUTSIDE the noise window and so
+    # survives rr_prominence_ignore_noise. IQR ignores the outer quartiles (≈25%
+    # breakdown), so it estimates the typical breath amplitude regardless of where
+    # the outliers are or what fraction they are — no per-recording tuning. The
+    # k factor maps IQR to peak-to-peak (√2 for a clean sinusoid, so clean
+    # recordings stay ≈ unchanged); raise k if spurious peaks appear, lower it if
+    # real breaths are still missed. Falls back to max-min if IQR is degenerate.
+    rr_prominence_robust: bool = True
+    rr_prominence_iqr_k: float = 1.4
     rr_resample_fs: float = 10.0    # not in UI: FS_RESAMP in bpRRSeries
     rr_band_low_hz: float = 0.1     # "HP Cutoff RR (Hz)"  (paramHP_RR)
     rr_band_high_hz: float = 1.0    # "LP Cutoff RR (Hz)"  (paramLP_RR)

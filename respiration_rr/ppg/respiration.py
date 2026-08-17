@@ -175,12 +175,16 @@ def _filter_peaks_prominence_combined(env_y, raw_peaks, global_thr, frac_local, 
     return kept
 
 
-def _breath_starts_envelope(env_x, env_y, prom_frac, min_dist=10, cfg=None):
+def _breath_starts_envelope(env_x, env_y, prom_frac, min_dist=10, cfg=None, move_regions=None):
     """Breath-starts = prominence-filtered local maxima on a 10 Hz envelope.
 
     The global-floor prominence is prom_frac * global range. When
     cfg.rr_local_prom_win_sec and rr_local_prom_frac are set, a peak must ALSO
-    clear frac_local * local range (see _filter_peaks_prominence_combined)."""
+    clear frac_local * local range (see _filter_peaks_prominence_combined).
+
+    If cfg.rr_prominence_ignore_noise and move_regions are given, the global
+    range is measured from noise-free samples only, so a high-amplitude noise
+    burst does not inflate the floor and starve real-breath detection."""
     if env_y.size < 4:
         return np.array([], dtype=int)
     raw_peaks = []
@@ -192,7 +196,7 @@ def _breath_starts_envelope(env_x, env_y, prom_frac, min_dist=10, cfg=None):
     if not raw_peaks:
         return np.array([], dtype=int)
     x = np.asarray(env_y, np.float64)
-    rng = x.max() - x.min()
+    rng = _prominence_range(x, env_x, cfg, move_regions)
     global_thr = prom_frac * rng                        # manual per-variant floor
 
     # optional local-relative check
@@ -209,8 +213,41 @@ def _breath_starts_envelope(env_x, env_y, prom_frac, min_dist=10, cfg=None):
     return np.asarray(kept, dtype=int)
 
 
-def _breath_starts_raw(sig, fs, prom_frac):
-    """Breath-starts on a full-rate band-passed trace (LP param, @12016)."""
+def _prominence_range(y, y_times, cfg, move_regions):
+    """Amplitude range used to scale the breath-start prominence floor.
+
+    Two independent, composable safeguards against a high-amplitude artefact
+    inflating the floor and starving real-breath detection:
+
+      1. rr_prominence_ignore_noise — drop samples inside a movement region
+         before measuring, so a noise burst there does not count.
+      2. rr_prominence_robust — measure a ROBUST spread (k * IQR) instead of
+         max-min. IQR ignores the outer quartiles, so an edge/startup transient
+         or a spline overshoot that survives step 1 (because it sits just
+         OUTSIDE the noise window) still cannot inflate the floor. k maps IQR to
+         peak-to-peak (√2 for a clean sinusoid).
+
+    Both fall back to the plain global max-min when disabled or degenerate."""
+    y = np.asarray(y, np.float64)
+    seg = y
+    if (move_regions and cfg is not None
+            and getattr(cfg, "rr_prominence_ignore_noise", False)):
+        clean = ~_noise_flag_from_regions(y_times, move_regions).astype(bool)
+        if int(clean.sum()) >= 4:
+            seg = y[clean]
+    if cfg is not None and getattr(cfg, "rr_prominence_robust", False) and seg.size >= 4:
+        q1, q3 = np.percentile(seg, [25.0, 75.0])
+        rng = float(getattr(cfg, "rr_prominence_iqr_k", 1.4)) * float(q3 - q1)
+        if rng > 0:
+            return rng
+    return float(seg.max() - seg.min())
+
+
+def _breath_starts_raw(sig, fs, prom_frac, t=None, cfg=None, move_regions=None):
+    """Breath-starts on a full-rate band-passed trace (LP param, @12016).
+
+    When cfg.rr_prominence_ignore_noise and (t, move_regions) are given, the
+    prominence-floor range is measured from noise-free samples only."""
     sig = np.asarray(sig, np.float64)
     min_dist = max(1, int(round(fs * 1.0)))
     raw_peaks = []
@@ -221,7 +258,7 @@ def _breath_starts_raw(sig, fs, prom_frac):
             last = i
     if not raw_peaks:
         return np.array([], dtype=int)
-    rng = sig.max() - sig.min()
+    rng = _prominence_range(sig, t, cfg, move_regions) if t is not None else (sig.max() - sig.min())
     return np.asarray(filter_peaks_by_prominence(sig, raw_peaks, rng * prom_frac), dtype=int)
 
 
@@ -405,7 +442,7 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
     # ---- Param 4: LP/BW (raw channel band-passed at its OWN band, full rate) ----
     lp_trace = bandpass_filter(x, fs, cfg.bw_band_low_hz, cfg.bw_band_high_hz,
                                cfg.bw_filter_order)["filtered"]
-    bs_lp = _breath_starts_raw(lp_trace, fs, prom)
+    bs_lp = _breath_starts_raw(lp_trace, fs, prom, t=t, cfg=cfg, move_regions=move_regions)
     bs_lp_t = t[bs_lp] if bs_lp.size else np.zeros(0)
     lp_rr_t, lp_rr = _rr_from_starts(bs_lp_t, *_rr_gate_args(cfg, move_regions))
     params["LP"] = RRParam("LP", series_x=t, series_y=lp_trace,
@@ -500,7 +537,7 @@ def _rr_gate_args(cfg, move_regions):
 def _make_param(name, x, y, cfg, prom, move_regions=None):
     """Build an RRParam for the resampled-envelope path (RSA/RIIV/AUC)."""
     env_x, env_y = bp_rr_series(x, y, cfg.rr_band_low_hz, cfg.rr_band_high_hz, cfg.rr_filter_order)
-    bs = _breath_starts_envelope(env_x, env_y, prom, cfg=cfg) if env_y.size else np.array([], int)
+    bs = _breath_starts_envelope(env_x, env_y, prom, cfg=cfg, move_regions=move_regions) if env_y.size else np.array([], int)
     bs_t = env_x[bs] if bs.size else np.zeros(0)
     rr_t, rr = _rr_from_starts(bs_t, *_rr_gate_args(cfg, move_regions))
     return RRParam(name, series_x=np.asarray(x), series_y=np.asarray(y),
@@ -518,7 +555,7 @@ def _make_param_spline(name, x, y, cfg, prom, use_valleys=False, move_regions=No
     env_x, env_y = cubic_spline_rr_series(x, y, cfg.rr_resample_fs)
     if env_y.size:
         detect_on = -env_y if use_valleys else env_y
-        bs = _breath_starts_envelope(env_x, detect_on, prom, cfg=cfg)
+        bs = _breath_starts_envelope(env_x, detect_on, prom, cfg=cfg, move_regions=move_regions)
     else:
         bs = np.array([], int)
     bs_t = env_x[bs] if bs.size else np.zeros(0)
@@ -538,7 +575,7 @@ def _make_param_ssp(name, x, y, cfg, prom, use_valleys=False, lam=None, cutoff_h
     env_x, env_y = smoothing_spline_rr_series(x, y, cfg.rr_resample_fs, lam, cutoff_hz)
     if env_y.size:
         detect_on = -env_y if use_valleys else env_y
-        bs = _breath_starts_envelope(env_x, detect_on, prom, cfg=cfg)
+        bs = _breath_starts_envelope(env_x, detect_on, prom, cfg=cfg, move_regions=move_regions)
     else:
         bs = np.array([], int)
     bs_t = env_x[bs] if bs.size else np.zeros(0)
