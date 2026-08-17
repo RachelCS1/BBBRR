@@ -66,9 +66,13 @@ class ReferenceResult:
 def find_breath_crossings(time, signal, fs, rms_window_sec=None, hyst_frac=None):
     """Hysteresis / Schmitt-trigger positive-going zero crossings (findBreathCrossings @1499).
 
-    A crossing is accepted only after the signal has dipped below
-    -(hyst_frac * local_RMS) since the last accepted crossing. Crossing time
-    is linearly interpolated. Returns (crossing_times, local_rms).
+    Symmetric Schmitt trigger: a positive-going zero crossing is accepted as a
+    breath boundary only when a full swing through BOTH rails is confirmed --
+    the signal dipped below -(hyst_frac * local_RMS) (a real inhale) AND, after
+    the crossing, rises above +(hyst_frac * local_RMS) (a real exhale) before
+    it dips back below -thresh. A shallow mid-breath notch that briefly crosses
+    zero but never reaches +thresh is discarded, so one breath is not split into
+    two. Crossing time is linearly interpolated. Returns (crossing_times, local_rms).
     """
     if rms_window_sec is None:
         rms_window_sec = REFERENCE.rms_window_sec
@@ -90,21 +94,31 @@ def find_breath_crossings(time, signal, fs, rms_window_sec=None, hyst_frac=None)
     local_rms = np.sqrt((cum_sq[hi + 1] - cum_sq[lo]) / (hi - lo + 1))
 
     crossings = []
-    state = "seeking_neg"          # -> "seeking_pos_cross"
-    last_min = 0.0
+    state = "seek_neg"             # seek_neg -> seek_up -> confirm_pos -> seek_neg
+    pending = np.nan               # tentative up-crossing time awaiting +thresh confirmation
     for i in range(1, n):
         thresh = local_rms[i] * hyst_frac
-        if state == "seeking_neg":
+        if state == "seek_neg":
+            # arm: require a real inhale (dip below the negative rail)
             if x[i] < -thresh:
-                state = "seeking_pos_cross"; last_min = x[i]
-        else:  # seeking_pos_cross
-            if x[i] < last_min:
-                last_min = x[i]
+                state = "seek_up"
+        elif state == "seek_up":
+            # look for a positive-going zero crossing; record it tentatively
             if x[i - 1] <= 0 and x[i] > 0:
                 frac = abs(x[i - 1]) / abs(x[i] - x[i - 1])
-                t_cross = t[i - 1] + frac * (t[i] - t[i - 1])
-                crossings.append(t_cross)
-                state = "seeking_neg"
+                pending = t[i - 1] + frac * (t[i] - t[i - 1])
+                state = "confirm_pos"
+        else:  # confirm_pos: is the positive lobe real, or a mid-breath notch?
+            if x[i] > thresh:
+                # real exhale -> commit the boundary
+                crossings.append(pending)
+                pending = np.nan
+                state = "seek_neg"
+            elif x[i] < -thresh:
+                # notch: fell back below the negative rail before a real exhale;
+                # discard the tentative crossing and keep seeking the real one
+                pending = np.nan
+                state = "seek_up"
     return np.asarray(crossings, np.float64), local_rms
 
 
