@@ -70,7 +70,12 @@ class ReferenceSettings:
     spec_min_hz: float = 0.08       # "Spec min freq (Hz)"  (paramSpecMin)
     spec_max_hz: float = 1.0        # "Spec max freq (Hz)"  (paramSpecMax)
     spec_top_db: float = 100.0        # "top dB in spectogram"  (paramTopDB)
-    spec_high_seg_sec: float = 32.0 # "highest value segment (s)"  (paramHighSeg)
+    spec_high_seg_sec: float = 60.0 # "highest value segment (s)"  (paramHighSeg; HTML default 60)
+
+    # DISPLAY-ONLY: also compute the REMbo RR via the spectrogram -> per-segment
+    # Butterworth bandpass -> breath detection (faithful HTML "segment bandpass" path),
+    # and overlay it on the reference RR plot. NOT used for RR / RRV / metrics.
+    ref_spectrogram_rr: bool = True
 
     # ---- Source formats ----
     csv_airflow_cols: tuple = ("time_s", "Nasal Pressure")   # "200 Hz Airflow CSV" columns
@@ -235,6 +240,22 @@ class PPGSettings:
     # real breaths are still missed. Falls back to max-min if IQR is degenerate.
     rr_prominence_robust: bool = True
     rr_prominence_iqr_k: float = 1.4
+    # ---- Averaged RR (windowed median over a per-breath RR series) ----
+    # Smooths a per-breath RR series by sliding a time window and taking the
+    # median of the points inside — a temporal smoothing of ONE series (it does
+    # NOT pool series together). Applied to every watch per-beat series on its
+    # own, so per channel you get all 3 params x 3 methods = 9 averaged curves
+    # (RSA/RIIV/AUC x source/spline/ssp; LP/BWlegacy/BWbank excluded), and to the
+    # REMbo reference's single per-breath series — same knobs, so the two are
+    # averaged identically and stay comparable. See respiration_rr/rr_average.py.
+    # INDEPENDENT of the reference MAE30 aggregation in reference/airflow.py (that
+    # averages the agreement ERROR for a summary metric; it is left untouched).
+    # Window chosen ~ the modal paced-breathing stage length; min_pts=2 keeps the
+    # slow 6-bpm stage (only ~2 reference breaths per 20 s) from going empty.
+    rr_avg_window_sec: float = 20.0   # sliding-window width (s)
+    rr_avg_step_sec: float = 4.0      # window stride (s) — output resolution only (~window/5)
+    rr_avg_min_pts: int = 2           # min RR points in a window to emit a value
+    rr_avg_method: str = "median"     # "median" (default) | "mean"
     rr_resample_fs: float = 10.0    # not in UI: FS_RESAMP in bpRRSeries
     rr_band_low_hz: float = 0.1     # "HP Cutoff RR (Hz)"  (paramHP_RR)
     rr_band_high_hz: float = 1.0    # "LP Cutoff RR (Hz)"  (paramLP_RR)

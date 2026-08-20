@@ -16,6 +16,7 @@ import numpy as np
 
 from ..settings import REFERENCE
 from ..preprocessing.filters import bandpass_ma_cascade
+from .spectrogram_rr import compute_spectrogram, compute_segment_bandpass
 from ..preprocessing.movement import (
     compute_movement_energy, compute_activity_energy,
     compute_noise_regions, auto_activity_threshold, merge_intervals,
@@ -58,6 +59,10 @@ class ReferenceResult:
     avg_pairs: list = field(default_factory=list)      # 30-s averaged {computed, device}
     ref_time: np.ndarray = None
     ref_rate: np.ndarray = None
+    # DISPLAY-ONLY spectrogram path (segment-bandpass RR); NOT used for RR/RRV/metrics.
+    seg_filtered: np.ndarray = None
+    seg_breaths: list = field(default_factory=list)
+    seg_segments: list = field(default_factory=list)
 
 
 # ----------------------------------------------------------------------
@@ -384,6 +389,24 @@ def analyze_reference(airflow_time, airflow_signal, fs,
     # ---- Agreement ----
     m = compute_breath_metrics(breaths, ref_time, ref_rate, ref_fs, cfg.time_shift_sec)
 
+    # ---- DISPLAY-ONLY: spectrogram -> per-segment bandpass -> breaths (faithful HTML port) ----
+    # STFT of the MA-cascade `filtered`; per-segment adaptive Butterworth bandpass of the
+    # ORIGINAL airflow; then the SAME breath detection. Not used for RR/RRV/metrics.
+    seg_filtered = None
+    seg_breaths = []
+    seg_segments = []
+    if cfg.ref_spectrogram_rr:
+        t0 = float(airflow_time[0])
+        spec = compute_spectrogram(filtered, fs, t0, cfg.fft_len_sec,
+                                   cfg.spec_min_hz, cfg.spec_max_hz, merged_noise)
+        if spec is not None:
+            seg = compute_segment_bandpass(spec, airflow_signal, fs, t0,
+                                           cfg.spec_high_seg_sec, cfg.spec_min_hz, cfg.spec_max_hz)
+            seg_filtered = seg["filtered"]
+            seg_segments = seg["segments"]
+            seg_crossings, _ = find_breath_crossings(airflow_time, seg_filtered, fs)
+            seg_breaths = detect_breaths(seg_crossings, min_breath, max_breath, merged_noise)
+
     return ReferenceResult(
         time=airflow_time, raw=airflow_signal, filtered=filtered,
         baseline=baseline, high_passed=high_passed, fs=fs, local_rms=local_rms,
@@ -394,4 +417,5 @@ def analyze_reference(airflow_time, airflow_signal, fs,
         rrv_time=rrv_x, rrv_value=rrv_y,
         metrics=m["metrics"], pairs=m["pairs"], avg_pairs=m["avg_pairs"],
         ref_time=ref_time, ref_rate=ref_rate,
+        seg_filtered=seg_filtered, seg_breaths=seg_breaths, seg_segments=seg_segments,
     )

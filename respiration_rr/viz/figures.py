@@ -57,6 +57,11 @@ def plot_reference(ref, title="Reference (REMbo / Poly) — airflow RR"):
     bx = [b.center for b in ref.breaths]
     br = [b.rate for b in ref.breaths]
     ax.plot(bx, br, "o-", color="#2563eb", ms=3, lw=0.8, label="Computed RR")
+    if getattr(ref, "seg_breaths", None):
+        sx = [b.center for b in ref.seg_breaths]
+        sr = [b.rate for b in ref.seg_breaths]
+        ax.plot(sx, sr, "^--", color="#16a34a", ms=3, lw=0.8, alpha=0.85,
+                label="Computed RR (spectrogram segment-bandpass — display only)")
     if ref.ref_time is not None and len(ref.ref_time):
         ax.plot(ref.ref_time, ref.ref_rate, color="#ef4444", lw=0.8, alpha=0.7, label="Device RR")
     _shade_noise(ax, ref.merged_noise)
