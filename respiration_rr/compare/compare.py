@@ -51,7 +51,7 @@ def reference_rr_series(ref_result):
     return t, r
 
 
-def collect_watch_candidates(ppg_results, params=("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp", "AUC", "AUC_spline", "AUC_ssp", "LP", "BWlegacy", "BWbank")):
+def collect_watch_candidates(ppg_results, params=("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp", "AUC", "AUC_spline", "AUC_ssp", "LP")):  # PARKED: "BWlegacy", "BWbank"
     """Flatten analyze_ppg() output into a list of Candidate series."""
     cands = []
     for channel, res in ppg_results.items():
@@ -104,7 +104,7 @@ def rank_candidates(cands, ref_time, ref_rr, offset, min_overlap_sec=None):
 
 
 def compare_watch_vs_reference(ppg_results, ref_result, offset=0.0,
-                               top_n=None, params=("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp", "AUC", "AUC_spline", "AUC_ssp", "LP", "BWlegacy", "BWbank")):
+                               top_n=None, params=("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp", "AUC", "AUC_spline", "AUC_ssp", "LP")):  # PARKED: "BWlegacy", "BWbank"
     """End-to-end comparison. `offset` (seconds) shifts every watch candidate onto
     the REMbo clock; supply the IR-PPG MSD sync offset (see respiration_rr.sync)."""
     if top_n is None:

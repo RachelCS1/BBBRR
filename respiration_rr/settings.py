@@ -277,7 +277,7 @@ class PPGSettings:
     # legacy method (per-segment rarer-polarity peaks + zero-cross dedup) instead
     # of prominence peaks. Exposed as an extra per-channel parameter so the two
     # BW detectors can be compared side by side.
-    bwlegacy_enabled: bool = True  # add the BWlegacy parameter to every channel
+    bwlegacy_enabled: bool = False  # PARKED (BW-extraction rework): was True. Re-enable to restore BWlegacy.
     # BWlegacy now runs the FULL legacy chain: build the signal the old way
     # (FFT band-pass 0.1-0.5 Hz + peak-envelope detrend + spline gap-fill) and
     # then detect peaks the old way. p2p_th is the legacy amplitude gate; it is
@@ -302,7 +302,7 @@ class PPGSettings:
     # (energy + wide-band match), mode-smoothed level choice, zero-crossing
     # STITCHING at level transitions, then a trend state-machine breath detector.
     # OFF by default so existing outputs are byte-identical until enabled.
-    bwbank_enabled: bool = True               # add the BWbank parameter to every channel
+    bwbank_enabled: bool = False              # PARKED (BW-extraction rework): was True. Re-enable to restore BWbank.
     bwbank_work_fs: float = 16.0              # working rate: channel is decimated to this
     bwbank_rate_bands_bpm: tuple = ((4, 10), (8, 14), (12, 18),
                                     (16, 22), (20, 30), (28, 40))  # rateBank (bpm)

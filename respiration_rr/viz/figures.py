@@ -101,7 +101,7 @@ def plot_ppg_channel(res, title=None, mae_by_param=None):
     own MAE vs the reference (from compare.mae_by_candidate, filtered to this channel).
     """
     params = [p for p in ("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp",
-                          "AUC", "AUC_spline", "AUC_ssp", "LP", "BWlegacy", "BWbank")
+                          "AUC", "AUC_spline", "AUC_ssp", "LP")  # PARKED: "BWlegacy", "BWbank"
               if p in res.params]
     n = len(params)
     fig, axes = plt.subplots(n, 1, figsize=(13, 2.1 * n), sharex=True)
@@ -245,10 +245,12 @@ def plot_ppg_overview(ppg_results):
                "RSA_ssp", "RIIV_ssp", "AUC_ssp"):                     # only when produced
         if any(sp in ppg_results[ch].params for ch in channels):
             params.append(sp)
-    if any("BWlegacy" in ppg_results[ch].params for ch in channels):   # only when produced
-        params.append("BWlegacy")
-    if any("BWbank" in ppg_results[ch].params for ch in channels):     # only when produced
-        params.append("BWbank")
+    # PARKED (BW-extraction rework): BWlegacy / BWbank appends removed from the
+    # active base. Re-enable their settings flags and restore these to bring back.
+    # if any("BWlegacy" in ppg_results[ch].params for ch in channels):   # only when produced
+    #     params.append("BWlegacy")
+    # if any("BWbank" in ppg_results[ch].params for ch in channels):     # only when produced
+    #     params.append("BWbank")
     params.append("Ridge")
     fig, ax = plt.subplots(figsize=(11, 5))
     width = 0.15 if len(params) <= 5 else 0.13
