@@ -83,14 +83,14 @@ def hr_series_from_beats(ppg_results, sig, offset):
 def accumulate(rec_id, edf, csv, channel, methods, tol, specB_window, metric, raw, fundamental,
                detrend, detrend_cross, detrend_baseline, segment_sec, segment_min,
                tot, inb, run_ref, run_ppg, run_sync, cfg, deps, legacy_hamming=False,
-               mapas_hrlock=False, butter_order=None):
+               mapas_hrlock=False, butter_order=None, route_by="signal"):
     (Candidate, score_candidate, reference_average_rr, average_series,
      spectro_average, METHODS, REF_METHODS) = deps
     ref = run_ref(edf)
     ppg_results, sig = run_ppg(csv)
     offset = run_sync(edf, ppg_results, sig)
     truth_at, truth_ar = reference_average_rr(ref)
-    if truth_at.size < 2 or channel not in sig.channels:
+    if truth_at.size < 2 or (route_by == "signal" and channel not in sig.channels):
         print(f"  [skip] {rec_id}: no reference / channel")
         return
     hr_t, hr_v = hr_series_from_beats(ppg_results, sig, offset)
@@ -98,66 +98,77 @@ def accumulate(rec_id, edf, csv, channel, methods, tol, specB_window, metric, ra
     if hr_t.size < 2:
         print(f"  [skip] {rec_id}: no HR from beats")
         return
-    x = np.asarray(sig.channels[channel], np.float64)
+    x = (np.asarray(sig.channels[channel], np.float64)
+         if channel in sig.channels else None)     # unused in route_by="ref"
     fs = float(sig.fs)
     low, high = cfg.bw_band_low_hz, cfg.bw_band_high_hz
     avg_fn = lambda tt, rr: average_series(tt, rr, cfg)
 
     for name in methods:
-        if name in REF_METHODS:
-            refs = [np.asarray(sig.channels[c], np.float64)
-                    for c in REF_LEDS if c in sig.channels and c != channel]
-            if not refs:
-                continue
-            bw = REF_METHODS[name](x, refs, fs, low, high)
+        if route_by == "ref":
+            # ---- route-by-REFERENCE: the reference median-average IS the routing
+            # source (no signal extraction). The per-cell totals then show the
+            # category SPLIT as the reference sees it; HR bins still come from the
+            # PPG beats. Co-location is trivially ~100% here (our series == truth),
+            # so read the SPLIT (segment counts per cell), not the % score.
+            b_at, b_ar = np.asarray(truth_at), np.asarray(truth_ar)
+            series_offset = 0.0                       # reference already on REMbo clock
         else:
-            fn = METHODS.get(name)
-            if fn is None:
-                continue
-            if name == "MA":
-                bw = fn(x, fs, low, high, cfg.bw_filter_order)
-            elif name == "Butter" and butter_order is not None:
-                bw = fn(x, fs, low, high, order=butter_order)   # Butterworth order sweep
-            elif name == "MAPAS" and mapas_hrlock:
-                # lock the cardiac fundamental to the measured beat HR (signal clock)
-                from respiration_rr.ppg.bw_methods import mapas_hrlock as _mapas_hrlock
-                bw = _mapas_hrlock(x, fs, low, high, hr_t_sig, hr_v_sig)
-            elif name == "Legacy":
-                # Legacy IS the detrend extraction — wire its own baseline + the
-                # optional pre-FFT Hamming window (this run's tuning knobs).
-                bw = fn(x, fs, low, high, baseline_sec=detrend_baseline,
-                        use_hamming=legacy_hamming)
+            if name in REF_METHODS:
+                refs = [np.asarray(sig.channels[c], np.float64)
+                        for c in REF_LEDS if c in sig.channels and c != channel]
+                if not refs:
+                    continue
+                bw = REF_METHODS[name](x, refs, fs, low, high)
             else:
-                bw = fn(x, fs, low, high)
-        use_fund = fundamental or (name == "Legacy")     # Legacy always uses fundamental ridge
-        if detrend == "adaptive" and name != "Legacy":
-            # fuse two ridges: plain (good at low RR) + detrended (good at high RR).
-            # regime is read from the PLAIN estimate, which never over-reads, so a
-            # plain value >= cross reliably means we are in the high-RR regime.
-            from respiration_rr.ppg.bw_methods import legacy_detrend
-            o_p = spectro_average(bw, fs, specB_window, cfg, avg_fn, fundamental=use_fund)
-            o_d = spectro_average(legacy_detrend(bw, fs, low, high, baseline_sec=detrend_baseline),
-                                  fs, specB_window, cfg, avg_fn, fundamental=use_fund)
-            if o_p is None or o_d is None:
-                continue
-            st, sr_p, _, _, prom = o_p
-            _, sr_d, _, _, _ = o_d
-            sr_f = np.where(np.isfinite(sr_p) & (sr_p >= detrend_cross), sr_d, sr_p)
-            nanp = ~np.isfinite(sr_p)
-            sr_f[nanp] = np.asarray(sr_d)[nanp]
-            at_f, ar_f = avg_fn(st, sr_f)
-            out = (st, sr_f, at_f, ar_f, prom)
-        else:
-            if detrend == "on" and name != "Legacy":     # envelope-detrend post-step (Legacy already has it)
+                fn = METHODS.get(name)
+                if fn is None:
+                    continue
+                if name == "MA":
+                    bw = fn(x, fs, low, high, cfg.bw_filter_order)
+                elif name == "Butter" and butter_order is not None:
+                    bw = fn(x, fs, low, high, order=butter_order)   # Butterworth order sweep
+                elif name == "MAPAS" and mapas_hrlock:
+                    # lock the cardiac fundamental to the measured beat HR (signal clock)
+                    from respiration_rr.ppg.bw_methods import mapas_hrlock as _mapas_hrlock
+                    bw = _mapas_hrlock(x, fs, low, high, hr_t_sig, hr_v_sig)
+                elif name == "Legacy":
+                    # Legacy IS the detrend extraction — wire its own baseline + the
+                    # optional pre-FFT Hamming window (this run's tuning knobs).
+                    bw = fn(x, fs, low, high, baseline_sec=detrend_baseline,
+                            use_hamming=legacy_hamming)
+                else:
+                    bw = fn(x, fs, low, high)
+            use_fund = fundamental or (name == "Legacy")     # Legacy always uses fundamental ridge
+            if detrend == "adaptive" and name != "Legacy":
+                # fuse two ridges: plain (good at low RR) + detrended (good at high RR).
+                # regime is read from the PLAIN estimate, which never over-reads, so a
+                # plain value >= cross reliably means we are in the high-RR regime.
                 from respiration_rr.ppg.bw_methods import legacy_detrend
-                bw = legacy_detrend(bw, fs, low, high, baseline_sec=detrend_baseline)
-            out = spectro_average(bw, fs, specB_window, cfg, avg_fn, fundamental=use_fund)
-        if out is None:
-            continue
-        _st, _sr, _at, _ar, _prom = out
-        b_at, b_ar = (_st, _sr) if raw else (_at, _ar)     # raw ridge vs windowed-median
-        b_at, b_ar = np.asarray(b_at), np.asarray(b_ar)
-        bt = b_at + offset
+                o_p = spectro_average(bw, fs, specB_window, cfg, avg_fn, fundamental=use_fund)
+                o_d = spectro_average(legacy_detrend(bw, fs, low, high, baseline_sec=detrend_baseline),
+                                      fs, specB_window, cfg, avg_fn, fundamental=use_fund)
+                if o_p is None or o_d is None:
+                    continue
+                st, sr_p, _, _, prom = o_p
+                _, sr_d, _, _, _ = o_d
+                sr_f = np.where(np.isfinite(sr_p) & (sr_p >= detrend_cross), sr_d, sr_p)
+                nanp = ~np.isfinite(sr_p)
+                sr_f[nanp] = np.asarray(sr_d)[nanp]
+                at_f, ar_f = avg_fn(st, sr_f)
+                out = (st, sr_f, at_f, ar_f, prom)
+            else:
+                if detrend == "on" and name != "Legacy":     # envelope-detrend post-step (Legacy already has it)
+                    from respiration_rr.ppg.bw_methods import legacy_detrend
+                    bw = legacy_detrend(bw, fs, low, high, baseline_sec=detrend_baseline)
+                out = spectro_average(bw, fs, specB_window, cfg, avg_fn, fundamental=use_fund)
+            if out is None:
+                continue
+            _st, _sr, _at, _ar, _prom = out
+            b_at, b_ar = (_st, _sr) if raw else (_at, _ar)     # raw ridge vs windowed-median
+            b_at, b_ar = np.asarray(b_at), np.asarray(b_ar)
+            series_offset = offset
+        bt = b_at + series_offset
         n_rr = len(RR_EDGES) + 1
 
         if segment_sec and segment_sec > 0:
@@ -214,6 +225,10 @@ def main(argv=None):
     ap.add_argument("--channel", default="Artifact")
     ap.add_argument("--methods", nargs="+",
                     default=["MA", "Butter", "MAPAS", "MAPASref", "MAPASnar", "Legacy"])
+    ap.add_argument("--route-by", choices=("signal", "ref"), default="signal",
+                    help="routing RR source: signal = BW-extraction methods (default, unchanged); "
+                         "ref = the reference median-average itself (shows the reference category "
+                         "SPLIT; HR bins still from PPG beats). ref ignores --methods/--channel.")
     ap.add_argument("--metric", choices=("coloc", "band"), default="coloc",
                     help="coloc = routed to same RR category; band = within +/- tol bpm")
     ap.add_argument("--tol", type=float, default=4.0)
@@ -290,7 +305,7 @@ def main(argv=None):
     deps = (Candidate, score_candidate, reference_average_rr, average_series,
             spectro_average, METHODS, REF_METHODS)
 
-    methods = args.methods
+    methods = ["Reference"] if args.route_by == "ref" else args.methods
     tot = {m: np.zeros((n_rr, n_hr)) for m in methods}
     inb = {m: np.zeros((n_rr, n_hr)) for m in methods}
 
@@ -305,7 +320,7 @@ def main(argv=None):
                        args.detrend_baseline, args.segment_sec, args.segment_min,
                        tot, inb, run_reference, run_ppg, run_sync, cfg_run, deps,
                        legacy_hamming=args.legacy_hamming, mapas_hrlock=args.mapas_hrlock,
-                       butter_order=args.butter_order)
+                       butter_order=args.butter_order, route_by=args.route_by)
         except Exception as e:
             print(f"  [ERR]  {rid}: {e}")
 
