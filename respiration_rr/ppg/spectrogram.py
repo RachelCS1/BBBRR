@@ -61,3 +61,49 @@ def ridge_rr(spect, f_low, f_high):
     rr = ridge_hz * 60.0
     rr[p.max(axis=0) <= 0] = np.nan
     return spect["times"], rr
+
+
+def ridge_rr_fundamental(spect, f_low, f_high, ratio_th=0.85, energy_th=0.06):
+    """Ridge with fundamental selection + per-column normalisation (port of
+    findRRinSpec/RR_freq_func — steps 1 & 3 together, which are coupled).
+
+    Per column: normalise the RR band to a pdf (sum=1) and zero bins below
+    `energy_th` (kills spread-out drift/Mayer energy so it cannot be mistaken for
+    a low fundamental); find local peaks; if more than one is within `ratio_th` of
+    the tallest, pick the LOWEST-frequency one (the fundamental, not a harmonic);
+    otherwise the tallest. The argmax bin is always a candidate so a fundamental
+    on the band edge (which find_peaks cannot flag) is not lost. Returns (times, bpm).
+    """
+    from scipy.signal import find_peaks
+    if spect is None:
+        return np.zeros(0), np.zeros(0)
+    freqs = spect["freqs"]
+    band_idx = np.where((freqs >= f_low) & (freqs <= f_high))[0]
+    times = spect["times"]
+    if band_idx.size == 0:
+        return times, np.full(times.size, np.nan)
+    P = spect["power_lin"][band_idx, :]        # (nBandBins, nFrames)
+    bandfreqs = freqs[band_idx]
+    n = P.shape[1]
+    rr = np.full(n, np.nan)
+    for i in range(n):
+        col = P[:, i]
+        s = col.sum()
+        if s <= 0:
+            continue
+        col = col / s                          # column -> pdf (normalise)
+        col = np.where(col < energy_th, 0.0, col)   # zero weak/spread energy
+        if col.max() <= 0:
+            continue
+        locs, _ = find_peaks(col)
+        cand = np.unique(np.append(locs, np.argmax(col))) if locs.size else np.array([np.argmax(col)])
+        order = np.argsort(col[cand])[::-1]    # candidates, tallest first
+        cand_s = cand[order]
+        pks_s = col[cand_s]
+        high = np.where(pks_s / pks_s[0] > ratio_th)[0]
+        if high.size > 1:                      # harmonics present -> lowest freq
+            chosen = cand_s[high[np.argmin(cand_s[high])]]
+        else:
+            chosen = cand_s[0]                 # single dominant peak
+        rr[i] = bandfreqs[chosen] * 60.0
+    return times, rr

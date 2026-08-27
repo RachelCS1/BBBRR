@@ -35,14 +35,20 @@ from .dsp import moving_average
 from .spectrogram import compute_spectrogram, ridge_rr
 
 
-def fft_bandpass(signal, fs, lo, hi):
-    """FFT-zeroing band-pass (port of FFTfilter, type='bandpass')."""
+def fft_bandpass(signal, fs, lo, hi, use_hamming=False):
+    """FFT-zeroing band-pass (port of FFTfilter, type='bandpass').
+
+    `use_hamming` reproduces the original FFTfilter, which multiplied the whole
+    signal by a Hamming window before the FFT (reduces spectral leakage but
+    tapers the record edges). Default off keeps the current plain behaviour.
+    """
     x = np.asarray(signal, np.float64)
     L = x.size
     if L < 4:
         return x.copy()
     fq = np.linspace(1.0 / (L / fs), fs + 1.0 / (L / fs), L, endpoint=False)
-    F = np.fft.fft(x)
+    xw = x * np.hamming(L) if use_hamming else x
+    F = np.fft.fft(xw)
     F[(fq <= lo) | (fq >= hi)] = 0.0
     return 2.0 * np.real(np.fft.ifft(F))
 
@@ -92,24 +98,51 @@ def _envelope(peak_idx, peak_val, grid):
     return np.zeros(grid.size)
 
 
-def detrend_peaks(signal, fs, noise, p2p_th, band=(0.1, 0.7)):
+def detrend_peaks(signal, fs, noise, p2p_th, band=(0.1, 0.7), baseline_sec=5.0,
+                  use_hamming=False, env_gate_frac=None, env_gate_win=0.0):
     """Peak-envelope detrend + amplitude noise flag (port of Detrend_peaks).
 
     `band` = FFT band-pass (Hz) applied before the envelope detrend; the legacy
-    upper cutoff was 0.5, raised here to 0.7. Returns (detrended, noise_flag).
+    upper cutoff was 0.5, raised here to 0.7. `baseline_sec` = the moving-average
+    baseline window used to gate real peaks (legacy 5 s); a LONGER baseline helps
+    slow breaths (period > 5 s) which the 5 s baseline tracks and so mis-gates.
+    `use_hamming` reproduces the original FFTfilter's pre-FFT Hamming window.
+
+    `env_gate_frac` (the envelope-distance FENCE): when set, only peaks with
+    prominence >= env_gate_frac * (median envelope distance) shape the envelopes.
+    Small fast ripples that fake a high RR during slow breathing are then excluded,
+    so the midline stays a clean slow baseline and slow breaths survive the detrend.
+    Returns (detrended, noise_flag).
     """
     spl = noise_correction(signal, noise, fs, "basic")
-    filt = fft_bandpass(spl, fs, band[0], band[1])
-    mov = moving_average(filt, max(3, int(round(5 * fs))))
+    filt = fft_bandpass(spl, fs, band[0], band[1], use_hamming=use_hamming)
+    mov = moving_average(filt, max(3, int(round(baseline_sec * fs))))
     grid = np.arange(filt.size)
 
-    up, _ = find_peaks(filt)
-    up = up[filt[up] >= mov[up]]                 # drop peaks below the mean trend
-    above = _envelope(up, filt[up], grid)
+    def _envelopes(localref, frac):
+        # localref/frac None -> ungated; else keep a peak only where its prominence
+        # exceeds frac * the (local or global) envelope distance at that location.
+        u, pu = find_peaks(filt, prominence=0)
+        keep = filt[u] >= mov[u]                      # above the mean trend
+        if localref is not None:
+            keep = keep & (pu["prominences"] >= frac * localref[u])
+        u = u[keep]; ab = _envelope(u, filt[u], grid)
+        d, pd = find_peaks(-filt, prominence=0)
+        keepd = filt[d] <= mov[d]
+        if localref is not None:
+            keepd = keepd & (pd["prominences"] >= frac * localref[d])
+        d = d[keepd]; be = _envelope(d, filt[d], grid)
+        return ab, be
 
-    dn, _ = find_peaks(-filt)
-    dn = dn[filt[dn] <= mov[dn]]                  # drop troughs above the mean trend
-    below = _envelope(dn, filt[dn], grid)
+    above, below = _envelopes(None, None)             # pass 1: ungated envelopes
+    if env_gate_frac:                                 # pass 2: fence by envelope distance
+        p2p0 = above - below
+        if env_gate_win and env_gate_win > 0:         # LOCAL reference (adapts to amplitude)
+            ref = moving_average(p2p0, max(3, int(round(env_gate_win * fs))))
+        else:                                         # GLOBAL reference (one threshold)
+            ref = np.full_like(p2p0, float(np.median(p2p0)))
+        if np.any(ref > 0):
+            above, below = _envelopes(ref, env_gate_frac)
 
     detrended = filt - (above + below) / 2.0
     p2p = (above - below) * 1.1                   # *1.1: filter shrinks amplitude

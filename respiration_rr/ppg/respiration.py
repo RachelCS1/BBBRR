@@ -259,7 +259,17 @@ def _breath_starts_raw(sig, fs, prom_frac, t=None, cfg=None, move_regions=None):
     if not raw_peaks:
         return np.array([], dtype=int)
     rng = _prominence_range(sig, t, cfg, move_regions) if t is not None else (sig.max() - sig.min())
-    return np.asarray(filter_peaks_by_prominence(sig, raw_peaks, rng * prom_frac), dtype=int)
+    global_thr = rng * prom_frac
+
+    # optional BW-only local-relative check (dedicated knobs, independent of RSA/RIIV/AUC)
+    if cfg is not None:
+        w = getattr(cfg, "bw_local_prom_win_sec", None)
+        local_frac = getattr(cfg, "bw_local_prom_frac", None)
+        local_win = int(round(w * fs)) if w else None    # raw trace is at full fs
+        if local_win and local_win > 0 and local_frac:
+            return np.asarray(_filter_peaks_prominence_combined(
+                sig, raw_peaks, global_thr, local_frac, local_win), dtype=int)
+    return np.asarray(filter_peaks_by_prominence(sig, raw_peaks, global_thr), dtype=int)
 
 
 def _interval_hits_noise(t0, t1, move_regions):
@@ -442,7 +452,10 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
     # ---- Param 4: LP/BW (raw channel band-passed at its OWN band, full rate) ----
     lp_trace = bandpass_filter(x, fs, cfg.bw_band_low_hz, cfg.bw_band_high_hz,
                                cfg.bw_filter_order)["filtered"]
-    bs_lp = _breath_starts_raw(lp_trace, fs, prom, t=t, cfg=cfg, move_regions=move_regions)
+    bw_prom = getattr(cfg, "bw_prominence", None)   # BW-only prominence; None -> shared floor
+    if bw_prom is None:
+        bw_prom = prom
+    bs_lp = _breath_starts_raw(lp_trace, fs, bw_prom, t=t, cfg=cfg, move_regions=move_regions)
     bs_lp_t = t[bs_lp] if bs_lp.size else np.zeros(0)
     lp_rr_t, lp_rr = _rr_from_starts(bs_lp_t, *_rr_gate_args(cfg, move_regions))
     params["LP"] = RRParam("LP", series_x=t, series_y=lp_trace,

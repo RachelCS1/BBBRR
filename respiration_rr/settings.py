@@ -269,8 +269,23 @@ class PPGSettings:
     # RSA/RIIV/AUC use rr_band_* above (per-beat series). BW band-passes the raw
     # channel directly, so it gets independent cutoffs — tune these separately.
     bw_band_low_hz: float = 0.1    # BW high-pass (raw signal)
-    bw_band_high_hz: float = 1.0   # BW low-pass (raw signal)
+    bw_band_high_hz: float = 1.0   # BW low-pass (raw signal); 1.0 Hz = 60 bpm.
     bw_filter_order: int = 2        # BW filter order
+    # Separate breath-start prominence for the LP/BW param only. None -> reuse
+    # breath_start_prominence (so RSA/RIIV/AUC are untouched). Set a value to tune
+    # the BW peak detector independently of the beat-dependent params.
+    bw_prominence: float = 0.01    # 1% of the (robust IQR) amplitude range; was the
+                                   # shared 0.001 floor -> stricter breath peaks.
+    # Optional LOCAL prominence for the BW param only (mirrors rr_local_prom_* but
+    # dedicated, so it stays independent of RSA/RIIV/AUC). Both None -> global floor
+    # only (current behaviour). When both set, a BW peak must ALSO clear
+    # bw_local_prom_frac * (local max-min in a +-bw_local_prom_win_sec window).
+    bw_local_prom_win_sec: float = 4.0   # +-window (s) for the BW local range; mirrors
+                                         # the proven rr_local_prom_win_sec default.
+    bw_local_prom_frac: float = None     # local-relative fraction; bites only where it
+                                         # exceeds the global bw_prominence (0.01).
+                                         # None -> global-only (local check rejected
+                                         # small real breaths near larger ones).
 
     # ---- BWlegacy — legacy Breath_by_Breath zero-cross valley detector ----
     # Runs on the SAME BW band-passed trace, but finds breaths with the ported
