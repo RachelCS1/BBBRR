@@ -63,9 +63,11 @@ PER_CATEGORY_OVERRIDES = {
     # ssp SMOOTHING LEVEL per segment: cutoff just above the bin's max respiration
     # frequency (12 bpm=0.2 Hz, 30 bpm=0.5 Hz) — smooths faster jitter, keeps breathing.
     0: {"rr_ssp_cutoff_hz": 0.30},   # RR < 15  (slow): smooth harder
-    1: {"rr_ssp_cutoff_hz": 0.40,    # RR 15-30  (middle; more smoothing: was 0.55)
-        "rr_local_prom_frac": 0.08}, #           lower peak-detection floor (catch shallow mid beats)
-    2: {"rr_ssp_lam": 0.0,             # RR 30+  (fast): lam=0 -> interpolating spline, NO smoothing
+    1: {"rr_ssp_cutoff_hz": 0.55,    # RR 15-22  (mid-low; less smoothing: 0.50 -> 0.55)
+        "rr_local_prom_frac": 0.08}, #           lower peak-detection floor (catch shallow mid beats); rate-gate rejects false peaks
+    2: {"rr_ssp_cutoff_hz": 0.55,    # RR 22-30  (mid-high): SAME settings as bin 1 — differs ONLY in rate-gate spacing
+        "rr_local_prom_frac": 0.08},
+    3: {"rr_ssp_lam": 0.0,             # RR 30+  (fast): lam=0 -> interpolating spline, NO smoothing
         "rr_local_prom_frac": 0.04,    #           more sensitive peak detection (subtle fast breaths)
         "rr_local_prom_win_sec": 2.0}, #           tighter local window (~1 fast-breath period)
 }
@@ -74,8 +76,9 @@ PER_CATEGORY_OVERRIDES = {
 PER_CATEGORY_SPLINE_BP = {}
 
 # Categorization RR-bin edges for THIS lab only (bw_category_map.CM.RR_EDGES stays [12,30]
-# and is untouched). Override-dict keys map 0=<edge0, 1=mid, 2=>=edge1.
-RR_EDGES = [15.0, 30.0]      # <15 slow / 15-30 middle / 30+ fast
+# and is untouched). Override-dict keys map 0=<edge0, 1..=mids, last=>=edge[-1].
+# Middle split at 22: bins 1 (15-22) and 2 (22-30) share settings, differ ONLY in rate-gate spacing.
+RR_EDGES = [15.0, 22.0, 30.0]      # <15 slow / 15-22 mid-low / 22-30 mid-high / 30+ fast
 
 # ---- Rate-gate (THIRD graph) — use the category as a RATE prior on peak SPACING ----
 # For each breath, its category gives a rate range -> an inter-breath INTERVAL range.
@@ -87,6 +90,9 @@ RR_EDGES = [15.0, 30.0]      # <15 slow / 15-30 middle / 30+ fast
 RATE_GATE_MARGIN_BPM = 2.0          # widen each bin's rate range by +/- this before gating
 RATE_FLOOR_BPM = 4.0                # absolute physiological interval bounds
 RATE_CEIL_BPM = 48.0
+RATE_GATE = True                    # apply the per-category spacing gate to the DETREND (green) curve
+RATE_GATE_LOCAL_WIN_SEC = 4.0       # window (s) for "prominence relative to surroundings" when
+                                    # choosing which of two too-close peaks survives
 
 
 def _bin_rate_range(rb):
@@ -120,13 +126,13 @@ SHOW_DETREND_PEAKS = False          # per-beat: show the detrend+MAXIMA test cur
 # Rate-aware per-category HIGH-PASS cutoff (Hz) for DETREND_METHOD="hp_percat": remove the
 # baseline BELOW each bin's respiration band (so the slow swing goes, breathing survives).
 # Set safely below the bin's MIN breathing freq (slow can be ~6 bpm=0.1 Hz -> 0.06).
-DETREND_HP_CUTOFF = {0: None, 1: 0.15, 2: 0.30}   # <15 (no detrend — already good) / 15-30 / 30+
+DETREND_HP_CUTOFF = {0: None, 1: 0.15, 2: 0.15, 3: 0.30}   # <15 (no detrend) / 15-22 / 22-30 / 30+
 
 # ---- BW (4th param): band-pass the RAW channel per category, then find peaks ----
 # Each RR bin -> a respiration band (Hz) with a little OVERLAP into the neighbours, so a
 # breath near a bin edge (or a mis-categorised segment) is not clipped. Peak detection is
 # GLOBAL for now (PPG.bw_prominence etc.); per-category peak tuning comes later.
-BW_CAT_BAND = {0: (0.08, 0.30), 1: (0.20, 0.55), 2: (0.45, 0.90)}   # <15 / 15-30 / 30+
+BW_CAT_BAND = {0: (0.08, 0.30), 1: (0.20, 0.55), 2: (0.20, 0.55), 3: (0.45, 0.90)}   # <15 / 15-22 / 22-30 / 30+
 # Extra BW curve: same per-category band, but ADAPTIVE LOCAL peak detection added on top of
 # the global floor (threshold = max(global, BW_LOCAL_PROM_FRAC x local range in +/-win s)).
 BW_SHOW_LOCAL = True
@@ -186,7 +192,7 @@ def _detrend_lower_env(x, y):
 SUFFIX = {"spline": "_spline", "ssp": "_ssp"}
 BASES = ("RSA", "RIIV", "AUC")
 MIN_SUBSEG_SEC = 8.0                       # matches the final split decision
-RR_BAND_COLORS = ["#dbeafe", "#dcfce7", "#fee2e2"]   # RR bin backgrounds
+RR_BAND_COLORS = ["#dbeafe", "#dcfce7", "#fef9c3", "#fee2e2"]   # RR bin backgrounds (<15 / 15-22 / 22-30 / 30+)
 
 
 def _overrides(rb):
@@ -314,6 +320,10 @@ def per_category_series(base, method, sx, sy, mr, runs, offset, detrend=False, v
     else:
         ex, ey = np.zeros(0), np.zeros(0)
     bs = np.sort(np.concatenate(bsx)) if bsx else np.zeros(0)
+    # Category-rate spacing gate: drop peaks closer than the bin's fast interval (keeping the
+    # one most prominent vs its surroundings), fill gaps longer than the bin's slow interval.
+    if RATE_GATE and explicit and bs.size:
+        bs = _rate_gate(bs, ex, ey, offset, runs, use_valleys=val)
     rr_t, rr = _rr_from_starts(bs, *_rr_gate_args(PPG, mr))
     return ex, ey, bs, rr_t, rr
 
@@ -405,9 +415,16 @@ def _rate_gate(bs, env_x, env_y, offset, runs, use_valleys=True):
         return bs
     idx_of, rb_of = _run_indexer(runs)
 
-    def score(t):                                    # higher = more prominent -> keep
+    def score(t):                                    # higher = MORE PROMINENT vs surroundings -> keep
+        # Prominence relative to the local neighbourhood (+/- RATE_GATE_LOCAL_WIN_SEC):
+        # a valley's depth below the local ridge, or a peak's height above the local floor.
+        # This drops shallow false peaks that barely stand out, keeping the ones that do.
         v = np.interp(t, env_x, env_y)
-        return -v if use_valleys else v
+        w = RATE_GATE_LOCAL_WIN_SEC
+        m = (env_x >= t - w) & (env_x <= t + w)
+        if not m.any():
+            return -v if use_valleys else v
+        return float(env_y[m].max() - v) if use_valleys else float(v - env_y[m].min())
 
     def bounds(t):                                   # (imin, imax) seconds at time t
         ri = idx_of(np.array([t + offset]))[0]
@@ -676,6 +693,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Per-category BBBRR lab (spline & ssp & BW)")
     ap.add_argument("--data-root", default=S.DEFAULT_DATA_ROOT)
     ap.add_argument("--rec-id", default=None, help="recording id, e.g. Exp2/002 (default: first)")
+    ap.add_argument("--all", action="store_true",
+                    help="loop over ALL recordings and save PNGs (requires --save DIR)")
     ap.add_argument("--channels", nargs="+", default=None, help="default: all present")
     ap.add_argument("--methods", nargs="+", default=["spline", "ssp"],
                     choices=("spline", "ssp", "BW"),
@@ -693,66 +712,72 @@ def main(argv=None):
     recs = S.discover(args.data_root)
     if args.rec_id:
         recs = [r for r in recs if r[0] == args.rec_id]
+    elif not args.all:
+        recs = recs[:1]                                  # default: first recording only
     if not recs:
         sys.exit("No recording found.")
-    rid, edf, csv = recs[0]
+
+    out_dir = args.save
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    if args.all and not out_dir:
+        sys.exit("--all needs --save DIR (would open too many windows otherwise).")
+    headless = args.no_show or args.all                  # --all always saves, never shows
 
     import matplotlib
-    matplotlib.use("Agg" if args.no_show else "TkAgg")
+    matplotlib.use("Agg" if headless else "TkAgg")
     import matplotlib.pyplot as plt
 
     from main import run_reference, run_ppg, run_sync
     from respiration_rr.compare.compare import reference_rr_series
     from respiration_rr.rr_average import reference_average_rr
 
-    ref = run_reference(edf)
-    results, sig = run_ppg(csv)
-    offset = run_sync(edf, results, sig)
-
-    truth_at, truth_ar = reference_average_rr(ref)
-    hr_t, hr_v = CM.hr_series_from_beats(results, sig, offset)
-    runs = V._segment_by_crossing(truth_at, truth_ar, hr_t, hr_v, args.min_subseg_sec,
-                                  RR_EDGES, CM.HR_EDGES, fill=True)
-    ref_t, ref_r = reference_rr_series(ref)
-    rr_labels = CM._labels(RR_EDGES, "RR")
-
-    channels = args.channels or [c for c in ("Green", "Red", "IR", "Artifact") if c in results]
-    print(f"\nRecording {rid} | offset {offset:+.2f}s | {len(runs)} category runs | "
-          f"channels {channels} | methods {args.methods}")
     active = {rb: ov for rb, ov in PER_CATEGORY_OVERRIDES.items() if ov}
-    print(f"per-category overrides: {active if active else 'NONE (per-cat == global baseline)'}")
-
-    out_dir = args.save
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
+    print(f"RR_EDGES={RR_EDGES} | methods {args.methods} | overrides: {active or 'none'}")
     bw_mode = args.methods == ["BW"]                     # BW is per-channel (not per-base)
-    for ch in channels:
-        if ch not in results:
-            print(f"  [skip] {ch}: not in results"); continue
-        if bw_mode:
-            fig = _plot_channel_bw(rid, ch, sig.channels[ch], sig.time, sig.fs,
-                                   results[ch].move_regions, offset, runs, ref_t, ref_r,
-                                   results, rr_labels, plt)
-            figs = [fig]
-            if out_dir:
-                fig.savefig(os.path.join(out_dir, f"pcl_{rid.replace('/', '_')}_{ch}_BW.png"),
-                            dpi=110, bbox_inches="tight")
-        else:
-            figA, figB = _plot_channel(rid, ch, offset, runs, ref_t, ref_r, results,
-                                       args.methods, args.params, rr_labels, plt,
-                                       with_bw=args.with_bw, raw=sig.channels[ch],
-                                       t=sig.time, fs=sig.fs)
-            figs = [figA, figB]
-            if out_dir:
-                figA.savefig(os.path.join(out_dir, f"pcl_{rid.replace('/', '_')}_{ch}_A.png"),
-                             dpi=110, bbox_inches="tight")
-                figB.savefig(os.path.join(out_dir, f"pcl_{rid.replace('/', '_')}_{ch}_B.png"),
-                             dpi=110, bbox_inches="tight")
-        if args.no_show:
-            for f in figs:
-                plt.close(f)
 
-    if not args.no_show:
+    for rid, edf, csv in recs:
+        try:
+            ref = run_reference(edf)
+            results, sig = run_ppg(csv)
+            offset = run_sync(edf, results, sig)
+            truth_at, truth_ar = reference_average_rr(ref)
+            hr_t, hr_v = CM.hr_series_from_beats(results, sig, offset)
+            runs = V._segment_by_crossing(truth_at, truth_ar, hr_t, hr_v, args.min_subseg_sec,
+                                          RR_EDGES, CM.HR_EDGES, fill=True)
+            ref_t, ref_r = reference_rr_series(ref)
+        except Exception as e:
+            print(f"  [ERR] {rid}: {e}"); continue
+        rr_labels = CM._labels(RR_EDGES, "RR")
+        channels = args.channels or [c for c in ("Green", "Red", "IR", "Artifact") if c in results]
+        print(f"\nRecording {rid} | offset {offset:+.2f}s | {len(runs)} category runs | channels {channels}")
+        for ch in channels:
+            if ch not in results:
+                print(f"  [skip] {ch}: not in results"); continue
+            stem = f"pcl_{rid.replace('/', '_')}_{ch}"
+            if bw_mode:
+                fig = _plot_channel_bw(rid, ch, sig.channels[ch], sig.time, sig.fs,
+                                       results[ch].move_regions, offset, runs, ref_t, ref_r,
+                                       results, rr_labels, plt)
+                figs = [fig]
+                if out_dir:
+                    fig.savefig(os.path.join(out_dir, stem + "_BW.png"), dpi=110, bbox_inches="tight")
+            else:
+                figA, figB = _plot_channel(rid, ch, offset, runs, ref_t, ref_r, results,
+                                           args.methods, args.params, rr_labels, plt,
+                                           with_bw=args.with_bw, raw=sig.channels[ch],
+                                           t=sig.time, fs=sig.fs)
+                figs = [figA, figB]
+                if out_dir:
+                    figA.savefig(os.path.join(out_dir, stem + "_A.png"), dpi=110, bbox_inches="tight")
+                    figB.savefig(os.path.join(out_dir, stem + "_B.png"), dpi=110, bbox_inches="tight")
+            if headless:
+                for f in figs:
+                    plt.close(f)
+
+    if out_dir:
+        print(f"\nSaved PNGs -> {out_dir}")
+    if not headless:
         print("\nOpening figures — close the windows to exit.")
         plt.show()
 
