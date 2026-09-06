@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import bw_bp_sweep as S
 
-RR_EDGES = [12.0, 30.0]
+RR_EDGES = [15.0, 22.0, 30.0]
 OUT_DEFAULT = r"C:\Users\RACHEL~1\AppData\Local\Temp\claude\C--Users-RachelMizrahi-OneDrive---CardiacSense-Documents-GitHub-BBBRR\3bbdb805-5d0d-4f52-b50c-def0402d0def\scratchpad"
 
 TEMPLATE = r"""<title>Signal Explorer — __RID__</title>
@@ -170,7 +170,7 @@ function drawResult(){
   const cv=$('result'),ctx=cv.getContext('2d');const w=cv.width=cv.clientWidth*devicePixelRatio;const h=cv.height=200*devicePixelRatio;
   ctx.clearRect(0,0,w,h);const x0=30*devicePixelRatio,x1=w-6*devicePixelRatio,y0=h-4*devicePixelRatio,y1=6*devicePixelRatio;
   const X=c=>x0+c/(nCol-1)*(x1-x0),Y=bpm=>y0-(bpm/YMAXbpm)*(y0-y1);
-  [[0,EDG[0],'rgba(96,165,250,.10)'],[EDG[0],EDG[1],'rgba(52,211,153,.10)'],[EDG[1],YMAXbpm,'rgba(245,158,11,.10)']].forEach(b=>{ctx.fillStyle=b[2];ctx.fillRect(x0,Y(b[1]),x1-x0,Y(b[0])-Y(b[1]));});
+  {const BCOL=['rgba(96,165,250,.10)','rgba(52,211,153,.10)','rgba(245,158,11,.10)','rgba(244,114,182,.10)'];const bnds=[0].concat(EDG,[YMAXbpm]);for(let i=0;i<bnds.length-1;i++){ctx.fillStyle=BCOL[i%BCOL.length];ctx.fillRect(x0,Y(bnds[i+1]),x1-x0,Y(bnds[i])-Y(bnds[i+1]));}}
   EDG.forEach(e=>{ctx.strokeStyle='rgba(255,255,255,.18)';ctx.setLineDash([4,4]);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x0,Y(e));ctx.lineTo(x1,Y(e));ctx.stroke();ctx.setLineDash([]);});
   const plot=(arr,c,wd)=>{ctx.strokeStyle=c;ctx.lineWidth=wd;ctx.beginPath();let s=false;for(let i=0;i<nCol;i++){const v=arr[i];if(v==null||isNaN(v)){s=false;continue;}const x=X(i),y=Y(v);if(!s){ctx.moveTo(x,y);s=true;}else ctx.lineTo(x,y);}ctx.stroke();};
   plot(SP.refRR,'rgba(255,255,255,.9)',2*devicePixelRatio);
@@ -216,7 +216,7 @@ function drawStage(){
   ctx.strokeStyle=getCss('--cyan');ctx.lineWidth=1.5*devicePixelRatio;ctx.setLineDash([5,4]);const xc=((tC-t0)/(t1-t0))*w;ctx.beginPath();ctx.moveTo(xc,0);ctx.lineTo(xc,h);ctx.stroke();ctx.setLineDash([]);
 }
 function fmt(x,d){return (x==null||isNaN(x))?'–':Number(x).toFixed(d===undefined?1:d);}
-function binName(rr){if(rr==null||isNaN(rr))return '–';if(rr<EDG[0])return 'RR<'+EDG[0];if(rr<EDG[1])return 'RR'+EDG[0]+'–'+EDG[1];return 'RR>'+EDG[1];}
+function binName(rr){if(rr==null||isNaN(rr))return '–';if(rr<EDG[0])return 'RR<'+EDG[0];for(let i=0;i<EDG.length-1;i++){if(rr<EDG[i+1])return 'RR'+EDG[i]+'–'+EDG[i+1];}return 'RR>'+EDG[EDG.length-1];}
 function update(){
   cur=Math.max(0,Math.min(nCol-1,cur));$('slider').value=cur;
   const o=V.selRR[cur],r=SP.refRR[cur];
@@ -279,6 +279,8 @@ def main():
                     help="fence reference window (s): >0 = LOCAL adaptive threshold, 0 = global median")
     ap.add_argument("--specB-window", type=float, default=32.0)
     ap.add_argument("--out", default=OUT_DEFAULT)
+    ap.add_argument("--all", action="store_true",
+                    help="export an HTML for EVERY discovered recording (one run)")
     args = ap.parse_args()
 
     import dataclasses
@@ -288,52 +290,62 @@ def main():
     from respiration_rr.rr_average import reference_average_rr
     from respiration_rr.ppg.bw_methods import butterworth, legacy_detrend, mapas
 
-    if args.rec_id:
+    if args.all:
+        recs = S.discover(args.data_root)
+        print("Batch export: %d recordings" % len(recs))
+    elif args.rec_id:
         recs = [r for r in S.discover(args.data_root) if r[0] == args.rec_id] or [S._resolve_inputs(args)]
     else:
         recs = [S._resolve_inputs(args)]
-    rid, edf, csv = recs[0]
-    print("Recording:", rid)
 
-    ppg, sig = run_ppg(csv); ref = run_reference(edf); offset = run_sync(edf, ppg, sig)
-    tat, tar = reference_average_rr(ref)
-    x = np.asarray(sig.channels[args.channel], np.float64); fs = float(sig.fs)
-    low, high = cfg.bw_band_low_hz, cfg.bw_band_high_hz
-    bp = butterworth(x, fs, low, high)
-    det = legacy_detrend(bp, fs, low, high, baseline_sec=args.detrend_baseline)
-
-    sig_variants = {                                    # method menu (each best-tuned)
-        "raw": x,
-        "butter": bp,
-        "detrend": det,                                             # Butter + detrend (baseline 5)
-        "fence": legacy_detrend(bp, fs, low, high, baseline_sec=args.detrend_baseline,
-                                env_gate_frac=args.env_gate, env_gate_win=args.env_win),  # + local envelope fence
-        "mapas": legacy_detrend(mapas(x, fs, low, high), fs, low, high, baseline_sec=15.0),
-        "legacy": legacy_detrend(x, fs, low, high, baseline_sec=5.0),
-    }
-    var_out = {}
-    for k, s in sig_variants.items():
-        v = _variant(s, fs, cfg, tat, tar, offset, args.specB_window)
-        var_out[k] = {kk: v[kk] for kk in ("lin", "selIdx", "gmaxIdx", "selRR", "refRR", "match", "prom")}
-    # shared axes / reference from any variant (identical across the three)
-    v0 = _variant(det, fs, cfg, tat, tar, offset, args.specB_window)  # for axes
-    spec = {"times": np.round(v0["times"], 1).tolist(), "freqsBpm": np.round(v0["bpmf"], 3).tolist(),
-            "refRR": var_out["detrend"]["refRR"], "variants": var_out}
-    for vo in var_out.values():
-        vo.pop("refRR", None)  # refRR is shared
-
-    disp_fs = min(fs, 64.0); td = np.arange(0, x.size / fs, 1.0 / disp_fs); ts = np.arange(x.size) / fs
-    def rs(a): return np.round(np.interp(td, ts, a), 3).tolist()
-    data = {"rid": rid, "loBpm": cfg.rr_band_low_hz * 60, "hiBpm": cfg.rr_band_high_hz * 60, "rrEdges": RR_EDGES,
-            "spec": spec,
-            "stage": {"t0": 0.0, "fs": disp_fs, "t": td.round(2).tolist(),
-                      "raw": rs(x), "butter": rs(bp), "detrend": rs(det)}}
-    print("prominence:", {k: var_out[k]["prom"] for k in sig_variants})
-    html = TEMPLATE.replace("__RID__", rid.replace("/", "_")).replace("__DATA__", json.dumps(data))
     os.makedirs(args.out, exist_ok=True)
-    outp = os.path.join(args.out, "explorer_%s.html" % rid.replace("/", "_"))
-    open(outp, "w", encoding="utf-8").write(html)
-    print("saved ->", outp, "(%.0f KB)" % (len(html) / 1024))
+    n_ok = 0
+    for rid, edf, csv in recs:
+        try:
+            print("Recording:", rid)
+            ppg, sig = run_ppg(csv); ref = run_reference(edf); offset = run_sync(edf, ppg, sig)
+            tat, tar = reference_average_rr(ref)
+            x = np.asarray(sig.channels[args.channel], np.float64); fs = float(sig.fs)
+            low, high = cfg.bw_band_low_hz, cfg.bw_band_high_hz
+            bp = butterworth(x, fs, low, high)
+            det = legacy_detrend(bp, fs, low, high, baseline_sec=args.detrend_baseline)
+
+            sig_variants = {                                    # method menu (each best-tuned)
+                "raw": x,
+                "butter": bp,
+                "detrend": det,                                             # Butter + detrend (baseline 5)
+                "fence": legacy_detrend(bp, fs, low, high, baseline_sec=args.detrend_baseline,
+                                        env_gate_frac=args.env_gate, env_gate_win=args.env_win),  # + local envelope fence
+                "mapas": legacy_detrend(mapas(x, fs, low, high), fs, low, high, baseline_sec=15.0),
+                "legacy": legacy_detrend(x, fs, low, high, baseline_sec=5.0),
+            }
+            var_out = {}
+            for k, s in sig_variants.items():
+                v = _variant(s, fs, cfg, tat, tar, offset, args.specB_window)
+                var_out[k] = {kk: v[kk] for kk in ("lin", "selIdx", "gmaxIdx", "selRR", "refRR", "match", "prom")}
+            # shared axes / reference from any variant (identical across the three)
+            v0 = _variant(det, fs, cfg, tat, tar, offset, args.specB_window)  # for axes
+            spec = {"times": np.round(v0["times"], 1).tolist(), "freqsBpm": np.round(v0["bpmf"], 3).tolist(),
+                    "refRR": var_out["detrend"]["refRR"], "variants": var_out}
+            for vo in var_out.values():
+                vo.pop("refRR", None)  # refRR is shared
+
+            disp_fs = min(fs, 64.0); td = np.arange(0, x.size / fs, 1.0 / disp_fs); ts = np.arange(x.size) / fs
+            def rs(a, _td=td, _ts=ts): return np.round(np.interp(_td, _ts, a), 3).tolist()
+            data = {"rid": rid, "loBpm": cfg.rr_band_low_hz * 60, "hiBpm": cfg.rr_band_high_hz * 60, "rrEdges": RR_EDGES,
+                    "spec": spec,
+                    "stage": {"t0": 0.0, "fs": disp_fs, "t": td.round(2).tolist(),
+                              "raw": rs(x), "butter": rs(bp), "detrend": rs(det)}}
+            print("prominence:", {k: var_out[k]["prom"] for k in sig_variants})
+            html = TEMPLATE.replace("__RID__", rid.replace("/", "_")).replace("__DATA__", json.dumps(data))
+            outp = os.path.join(args.out, "explorer_%s.html" % rid.replace("/", "_"))
+            open(outp, "w", encoding="utf-8").write(html)
+            print("saved ->", outp, "(%.0f KB)" % (len(html) / 1024))
+            n_ok += 1
+        except Exception as e:
+            print("  SKIP %s: %s" % (rid, e))
+    if len(recs) > 1:
+        print("\nDone: %d/%d HTML files -> %s" % (n_ok, len(recs), args.out))
 
 
 if __name__ == "__main__":
