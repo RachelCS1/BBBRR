@@ -632,7 +632,8 @@ def _add_param_spectrogram(p, cfg):
     p.ridge_rr = rv
 
 
-def analyze_ppg(channels, t, fs, cfg=PPG, which=("Green", "Red", "IR", "Artifact"),
+def analyze_ppg(channels, t, fs, cfg=PPG,
+                which=("Green", "Red", "IR", "Yellow", "Artifact"),
                 move_regions=None):
     """Run analyze_ppg_channel over several channels.
 

@@ -35,7 +35,7 @@ import bw_bp_sweep as S      # reuse discover / _resolve_inputs
 
 METHOD_COLOR = {"MA": "#2563eb", "Butter": "#ef4444", "Wavelet": "#10b981",
                 "MAPAS": "#f59e0b", "MAPASref": "#8b5cf6", "MAPASnar": "#ec4899"}
-REF_LEDS = ("Green", "Red", "IR")     # reference channels for faithful MAPAS
+REF_LEDS = ("Green", "Red", "IR", "Yellow")   # reference channels for faithful MAPAS
 
 
 def _znorm(y):

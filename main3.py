@@ -53,10 +53,11 @@ DEFAULT_RECORDING = os.path.join(
 
 # analyzer channel name -> display colour (matches viz.figures palette)
 CHANNEL_COLORS = {"Green": "#22c55e", "Red": "#ef4444",
-                  "IR": "#a855f7", "Artifact": "#38bdf8"}
+                  "IR": "#a855f7", "Yellow": "#eab308", "Artifact": "#38bdf8"}
 
 # analyzer channel name -> raw rt_flow CSV column (for the untouched original trace)
-CHANNEL_COLUMN = {"Green": "ppg", "Red": "red", "IR": "infra_red", "Artifact": "artifact"}
+CHANNEL_COLUMN = {"Green": "ppg", "Red": "red", "IR": "infra_red",
+                  "Yellow": "yellow", "Artifact": "artifact"}
 
 # the four respiration parameters, with human-facing labels + colours
 PARAMS = ("RSA", "RIIV", "AUC", "LP")

@@ -299,6 +299,11 @@ def main(argv=None):
     ap.add_argument("--data-root", default=S.DEFAULT_DATA_ROOT)
     ap.add_argument("--rec-id", default=None, help="recording id, e.g. Exp2/002")
     ap.add_argument("--recordings", nargs="+", default=None, help="explicit rec ids")
+    ap.add_argument("--edf", default=None,
+                    help="explicit reference EDF path (with --watch; bypasses discovery, "
+                         "so a recording outside Data/Exp*/recordings data can be analysed)")
+    ap.add_argument("--watch", default=None,
+                    help="explicit watch CSV path (use together with --edf)")
     ap.add_argument("--all", action="store_true", help="loop over every recording")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--segment-sec", type=float, nargs="+", default=[30.0],
@@ -318,15 +323,20 @@ def main(argv=None):
     ap.add_argument("--no-show", action="store_true")
     args = ap.parse_args(argv)
 
-    recs = S.discover(args.data_root)
-    if args.recordings:
-        recs = [r for r in recs if r[0] in args.recordings]
-    elif args.rec_id:
-        recs = [r for r in recs if r[0] == args.rec_id]
-    elif not args.all:
-        recs = recs[:1]                                  # default: first recording only
-    if args.limit:
-        recs = recs[:args.limit]
+    if args.edf and args.watch:
+        recs = [(args.rec_id or "custom", args.edf, args.watch)]   # direct paths, skip discovery
+    elif args.edf or args.watch:
+        sys.exit("--edf and --watch must be given together.")
+    else:
+        recs = S.discover(args.data_root)
+        if args.recordings:
+            recs = [r for r in recs if r[0] in args.recordings]
+        elif args.rec_id:
+            recs = [r for r in recs if r[0] == args.rec_id]
+        elif not args.all:
+            recs = recs[:1]                              # default: first recording only
+        if args.limit:
+            recs = recs[:args.limit]
     if not recs:
         sys.exit("No recordings.")
 

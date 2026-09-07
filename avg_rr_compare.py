@@ -46,8 +46,9 @@ DEFAULT_DATA_ROOT = (r"C:\Users\RachelMizrahi\CardiacSense"
 DEFAULT_OUT = r"C:\Users\RachelMizrahi\AppData\Local\Temp\bbbrr_bench\avg_rr"
 
 # exclude Artifact for now
-DEFAULT_CHANNELS = ["Green", "Red", "IR"]
-CHANNEL_TITLE_COLOR = {"Green": "#22c55e", "Red": "#ef4444", "IR": "#a855f7", "Artifact": "#38bdf8"}
+DEFAULT_CHANNELS = ["Green", "Red", "IR", "Yellow"]
+CHANNEL_TITLE_COLOR = {"Green": "#22c55e", "Red": "#ef4444", "IR": "#a855f7",
+                       "Yellow": "#eab308", "Artifact": "#38bdf8"}
 
 # per-method line colour (same across every panel/channel)
 METHOD_COLOR = {"": "#2563eb", "_spline": "#f59e0b", "_ssp": "#10b981"}

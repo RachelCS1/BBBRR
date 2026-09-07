@@ -368,6 +368,46 @@ class PPGSettings:
         "XL-X": "acc_x", "XL-Y": "acc_y", "XL-Z": "acc_z",
     })
 
+    # ---- Watch-13 monitor CSV (labeled multi-LED wrist file; PRIMARY watch) ----
+    # Header: "TIMESTAMP,FP,ECG AC,PPG Green (Wrist),PPG Red (Wrist),PPG IR (Wrist),
+    #   PPG Yellow (Wrist),Artifact (Wrist),PPG Red (Right),PPG IR (Right),
+    #   PPG Blue (Right),XL X,XL Y,XL Z". This is the advanced watch the experiment
+    # is built around. Only the WRIST optical channels (Green/Red/IR/Yellow), the
+    # wrist Artifact and the accelerometer are used; the Right-hand LEDs, FP and ECG
+    # AC are ignored. It adds a FOURTH wrist LED, YELLOW, mapped to the new canonical
+    # key "yellow" (display name "Yellow"), wired through the whole channel pipeline.
+    #
+    # Rate: the file's timestamps declare a NOMINAL 512 Hz (dt alternates 1/2 ms with
+    # the 1 ms fraction = exactly 3/64, i.e. round(index*1000/512)) — but that makes
+    # them SYNTHETIC, generated FROM the assumed 512, so they cannot verify the true
+    # ADC rate. Cross-checking the cardiac fundamental (FFT) against the REMbo Pulse
+    # Wave reference — which the older 256/64 Hz watches match to <0.1% — shows watch-13
+    # runs ~5% slow: its true rate is ~488 Hz (512 Hz over-reads HR by 4.9%). Declared
+    # here as 488; CONFIRM the exact ADC rate with the firmware team. 488 is not a clean
+    # divisor of target_fs, so the reader does NOT set native_fs — prepare_watch takes
+    # the standard resample-to-256 -> FFT-upsample x4 path, and resample_linear uses this
+    # true rate, so the timeline (and HR/RR/sync) come out on real seconds.
+    wrist13_row_fs: float = 488.0          # not in UI: TRUE watch-13 rate (nominal 512, ~5% slow)
+    wrist13_signature_col: str = "PPG Green (Wrist)"   # header sniff for read_watch_auto
+    wrist13_time_col: str = "TIMESTAMP"
+    # Watch-13 IR-PPG MSD sync channel: the legacy watches sync finger-IR <-> REMbo
+    # finger Pulse Wave, but watch-13's IR is from the WRIST and is significantly
+    # weaker, so its MSD sync locks onto a spurious offset (proven on Exp3/Test/001:
+    # wrist IR locked at +98 s / worst RR-MAE, while GREEN locked at +23 s = the true
+    # MAE minimum). Watch-13 therefore syncs on GREEN ("ppg"); all other watches keep
+    # the legacy IR sync (SYNC.msd_channel_col) unchanged.
+    wrist13_sync_channel_col: str = "ppg"
+    # Watch-13 syncs on the SS (systolic-start) fiducial on BOTH sides (watch Green SS
+    # <-> REMbo Pulse Wave SS), not MSD — user-chosen after the interval curves lined
+    # up best on SS. Other watches keep MSD (SYNC.msd_fiducial).
+    wrist13_sync_fiducial: str = "SS"
+    wrist13_channel_cols: dict = field(default_factory=lambda: {
+        "PPG Green (Wrist)": "ppg", "PPG Red (Wrist)": "red",
+        "PPG IR (Wrist)": "infra_red", "PPG Yellow (Wrist)": "yellow",
+        "Artifact (Wrist)": "artifact",
+        "XL X": "acc_x", "XL Y": "acc_y", "XL Z": "acc_z",
+    })
+
 
 # ======================================================================
 # TOOL 3 — Cross-device comparison (Combined shell)
@@ -395,6 +435,12 @@ class SyncSettings:
     min_matched: int = 20           # require >= this many matched beats
     window_sec: float = 120.0       # clean-window length for the residual lock
     min_prominence: float = 3.0     # flag LOW if the match-count peak is < this many sigma
+    msd_channel_col: str = "infra_red"  # default watch channel for MSD sync (finger IR).
+                                        # The watch-13 reader overrides this per-file to
+                                        # "ppg" (Green) via PPG.wrist13_sync_channel_col,
+                                        # because its wrist IR is too weak to sync on.
+    msd_fiducial: str = "MSD"           # default sync fiducial on both sides ("MSD" | "SS").
+                                        # watch-13 overrides to "SS" via PPG.wrist13_sync_fiducial.
 
 
 # Singletons — import these.

@@ -3,6 +3,7 @@ CSV readers.
 
   read_watch_csv   : CardiacSense watch rt_flow_*.csv (ppg/ecg/artifact/red/ir/accel/spo2)
   read_monitor_csv : monitor-mode watch CSV (optical + accelerometer, no timestamp, 64 Hz)
+  read_wrist13_csv : watch-13 monitor CSV (labeled multi-LED wrist, real ts, 512 Hz, +Yellow)
   read_watch_auto  : dispatch to the right reader by sniffing the header
   read_poly_csv    : Polysomnograph CSV with block-average downsampling (parseCSV @1130)
 """
@@ -85,17 +86,73 @@ def read_monitor_csv(path: str, fs=None, cfg=PPG):
     return out
 
 
-def read_watch_auto(path: str, cfg=PPG):
-    """Read a watch CSV, auto-detecting real-time vs monitor format by header.
+def read_wrist13_csv(path: str, fs=None, cfg=PPG):
+    """Read a watch-13 monitor CSV — the primary experiment watch.
 
-    Real-time (rt_flow) files carry a timestamp column (cfg.csv_time_col,
-    "sampling_time"); monitor files do not. Dispatches accordingly so the same
-    pipeline analyses both.
+    Labeled multi-LED wrist file with a header like
+      "TIMESTAMP,FP,ECG AC,PPG Green (Wrist),PPG Red (Wrist),PPG IR (Wrist),
+       PPG Yellow (Wrist),Artifact (Wrist),PPG Red (Right),...,XL X,XL Y,XL Z".
+    Only the WRIST optical channels (Green/Red/IR/Yellow), the wrist Artifact and
+    the accelerometer are extracted (mapped to canonical keys via
+    cfg.wrist13_channel_cols); the Right-hand LEDs, FP and ECG AC are ignored. This
+    is the only reader that emits the new "yellow" channel key.
+
+    Rate: the file's timestamps declare a NOMINAL 512 Hz, but they are SYNTHETIC
+    (millisecond-quantized with the 1 ms-gap fraction = exactly 3/64 = round(index*
+    1000/512)), so they only echo the assumed 512 and cannot verify the true ADC
+    rate. Cross-checking the cardiac fundamental against the REMbo Pulse Wave (which
+    the older 256/64 Hz watches match to <0.1%) shows watch-13 runs ~5% slow — TRUE
+    rate ~488 Hz (declared in cfg.wrist13_row_fs; pass `fs` to override). 488 is not
+    a clean divisor of target_fs, so this reader does NOT set native_fs: prepare_watch
+    resamples from this true rate to 256 Hz and FFT-upsamples x4 to 1024, keeping the
+    timeline on real seconds.
+
+    Returns the same dict contract as the other watch readers:
+      time, fs, raw, and one array per channel present
+      (ppg/red/infra_red/yellow/artifact, acc_x/acc_y/acc_z).
+    """
+    fs = float(fs) if fs is not None else float(cfg.wrist13_row_fs)
+    df = pd.read_csv(path, low_memory=False)
+
+    by_norm = {_norm(c): c for c in df.columns}
+    # Sync hints (read by prepare_watch/main): Green channel (wrist IR too weak) and
+    # the SS fiducial on both sides.
+    out = {"fs": fs, "raw": df,
+           "sync_channel_col": cfg.wrist13_sync_channel_col,
+           "sync_fiducial": cfg.wrist13_sync_fiducial}
+    for src, dst in cfg.wrist13_channel_cols.items():
+        col = by_norm.get(_norm(src))
+        if col is not None:
+            out[dst] = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=np.float64)
+
+    # Real timestamps (informational — prepare_watch rebuilds its own timeline from
+    # fs). Fall back to a synthetic timeline if the column is missing/unparseable.
+    tcol = by_norm.get(_norm(cfg.wrist13_time_col))
+    if tcol is not None:
+        ts = pd.to_datetime(df[tcol], errors="coerce")
+        out["time"] = (ts - ts.iloc[0]).dt.total_seconds().to_numpy(dtype=np.float64)
+    else:
+        out["time"] = np.arange(len(df), dtype=np.float64) / fs
+    return out
+
+
+def read_watch_auto(path: str, cfg=PPG):
+    """Read a watch CSV, auto-detecting the format by header.
+
+    Dispatch order:
+      1. rt_flow real-time file — carries the timestamp column cfg.csv_time_col
+         ("sampling_time") -> read_watch_csv.
+      2. watch-13 monitor file — carries the labeled wrist LED column
+         cfg.wrist13_signature_col ("PPG Green (Wrist)") -> read_wrist13_csv.
+      3. otherwise a legacy monitor file (no timestamp) -> read_monitor_csv.
+    So the same pipeline analyses all three.
     """
     header = pd.read_csv(path, nrows=0).columns
     cols = {_norm(c) for c in header}
     if _norm(cfg.csv_time_col) in cols:
         return read_watch_csv(path)
+    if _norm(cfg.wrist13_signature_col) in cols:
+        return read_wrist13_csv(path, cfg=cfg)
     return read_monitor_csv(path, cfg=cfg)
 
 

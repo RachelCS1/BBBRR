@@ -693,6 +693,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Per-category BBBRR lab (spline & ssp & BW)")
     ap.add_argument("--data-root", default=S.DEFAULT_DATA_ROOT)
     ap.add_argument("--rec-id", default=None, help="recording id, e.g. Exp2/002 (default: first)")
+    ap.add_argument("--edf", default=None,
+                    help="explicit reference EDF path (with --watch; bypasses discovery, "
+                         "so a recording outside Data/Exp*/recordings data can be analysed)")
+    ap.add_argument("--watch", default=None,
+                    help="explicit watch CSV path (use together with --edf)")
     ap.add_argument("--all", action="store_true",
                     help="loop over ALL recordings and save PNGs (requires --save DIR)")
     ap.add_argument("--channels", nargs="+", default=None, help="default: all present")
@@ -709,11 +714,16 @@ def main(argv=None):
     ap.add_argument("--no-show", action="store_true")
     args = ap.parse_args(argv)
 
-    recs = S.discover(args.data_root)
-    if args.rec_id:
-        recs = [r for r in recs if r[0] == args.rec_id]
-    elif not args.all:
-        recs = recs[:1]                                  # default: first recording only
+    if args.edf and args.watch:
+        recs = [(args.rec_id or "custom", args.edf, args.watch)]   # direct paths, skip discovery
+    elif args.edf or args.watch:
+        sys.exit("--edf and --watch must be given together.")
+    else:
+        recs = S.discover(args.data_root)
+        if args.rec_id:
+            recs = [r for r in recs if r[0] == args.rec_id]
+        elif not args.all:
+            recs = recs[:1]                              # default: first recording only
     if not recs:
         sys.exit("No recording found.")
 
@@ -749,7 +759,7 @@ def main(argv=None):
         except Exception as e:
             print(f"  [ERR] {rid}: {e}"); continue
         rr_labels = CM._labels(RR_EDGES, "RR")
-        channels = args.channels or [c for c in ("Green", "Red", "IR", "Artifact") if c in results]
+        channels = args.channels or [c for c in ("Green", "Red", "IR", "Yellow", "Artifact") if c in results]
         print(f"\nRecording {rid} | offset {offset:+.2f}s | {len(runs)} category runs | channels {channels}")
         for ch in channels:
             if ch not in results:

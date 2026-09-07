@@ -47,7 +47,7 @@ RR_EDGES = [12.0, 30.0]           # -> bins: <12, 12-30, >30
 HR_EDGES = [60.0, 85.0]           # -> bins: <60, 60-85, >=85
 RR_LABELS = []                    # filled from edges in main()
 HR_LABELS = []
-REF_LEDS = ("Green", "Red", "IR")
+REF_LEDS = ("Green", "Red", "IR", "Yellow")
 
 
 def _mode_bin(vals, n_bins, edges):
@@ -67,7 +67,7 @@ def _labels(edges, prefix):
 
 def hr_series_from_beats(ppg_results, sig, offset):
     """Per-beat HR (bpm) on the REMbo clock, from the cleanest available LED."""
-    for ch in ("IR", "Green", "Red"):
+    for ch in ("IR", "Green", "Red", "Yellow"):
         res = ppg_results.get(ch)
         if res is not None and len(getattr(res, "ss_idx", []) or []) > 3:
             bt = np.asarray(sig.time)[np.asarray(res.ss_idx, dtype=int)] + offset
@@ -222,6 +222,11 @@ def main(argv=None):
     ap.add_argument("--data-root", default=S.DEFAULT_DATA_ROOT)
     ap.add_argument("--recordings", nargs="+", default=None, help="explicit rec ids")
     ap.add_argument("--limit", type=int, default=None, help="use only the first N recordings")
+    ap.add_argument("--edf", default=None,
+                    help="explicit reference EDF path (with --watch; bypasses discovery, "
+                         "so a recording outside Data/Exp*/recordings data can be analysed)")
+    ap.add_argument("--watch", default=None,
+                    help="explicit watch CSV path (use together with --edf)")
     ap.add_argument("--channel", default="Artifact")
     ap.add_argument("--methods", nargs="+",
                     default=["MA", "Butter", "MAPAS", "MAPASref", "MAPASnar", "Legacy"])
@@ -276,11 +281,16 @@ def main(argv=None):
     HR_LABELS = _labels(HR_EDGES, "HR")
     n_rr, n_hr = len(RR_EDGES) + 1, len(HR_EDGES) + 1
 
-    recs = S.discover(args.data_root)
-    if args.recordings:
-        recs = [r for r in recs if r[0] in args.recordings]
-    if args.limit:
-        recs = recs[:args.limit]
+    if args.edf and args.watch:
+        recs = [("custom", args.edf, args.watch)]          # direct paths, skip discovery
+    elif args.edf or args.watch:
+        sys.exit("--edf and --watch must be given together.")
+    else:
+        recs = S.discover(args.data_root)
+        if args.recordings:
+            recs = [r for r in recs if r[0] in args.recordings]
+        if args.limit:
+            recs = recs[:args.limit]
     if not recs:
         sys.exit("No recordings.")
 

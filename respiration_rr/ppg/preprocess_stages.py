@@ -30,27 +30,34 @@ from .beats import (
 from .systolic import compute_systolic_analysis
 
 
-def compute_channel_stages(raw_signal, src_fs, cfg=PPG, invert=None, base_color="#22c55e"):
+def compute_channel_stages(raw_signal, src_fs, cfg=PPG, invert=None, base_color="#22c55e",
+                           native_fs=None):
     """Return the ordered list of preprocessing stages for one channel.
 
     Each stage is a dict: {key, title, ylabel, traces:[{label, t, y, color, lw, alpha}]}.
-    Traces carry their own time axis (256 Hz stages vs 1024 Hz stages differ).
+    Traces carry their own time axis (base-rate stages vs 1024 Hz stages differ).
+
+    native_fs mirrors prepare_watch: the base rate the file is resampled to before
+    FFT-upsampling to target_fs. Defaults to cfg.fs_orig (256, upsample x4); pass the
+    file's native rate (e.g. 512 for watch-13) to upsample x2 straight to 1024
+    instead — so the inspector matches the real pipeline.
     """
     if invert is None:
         invert = cfg.invert_ppg
 
-    fs0 = cfg.fs_orig
+    fs0 = float(native_fs) if native_fs else float(cfg.fs_orig)
     fs1 = cfg.target_fs
+    factor = int(round(fs1 / fs0))
 
-    # 0) raw @ 256 Hz
+    # 0) raw @ base rate (fs0)
     raw = resample_linear(raw_signal, src_fs, fs0)
     t0 = np.arange(raw.size) / fs0
 
     # 1) inversion
     inv = -raw if invert else raw.copy()
 
-    # 2) FFT upsample x4 -> 1024 Hz, then edge trim
-    up_full = upsample_fft(inv, cfg.upsample_factor)
+    # 2) FFT upsample -> 1024 Hz, then edge trim
+    up_full = upsample_fft(inv, factor)
     n = up_full.size
     h = int(round(cfg.trim_head_sec * fs1))
     tl = int(round(cfg.trim_tail_sec * fs1))
@@ -72,7 +79,7 @@ def compute_channel_stages(raw_signal, src_fs, cfg=PPG, invert=None, base_color=
         {"key": "inv", "title": "1 · Inverted (×−1)" if invert else "1 · (no inversion)",
          "ylabel": "ADC",
          "traces": [{"label": "inverted", "t": t0, "y": inv, "color": faint, "lw": 0.6, "alpha": 1}]},
-        {"key": "up", "title": f"2 · FFT upsample ×{cfg.upsample_factor} → {fs1:.0f} Hz + trim "
+        {"key": "up", "title": f"2 · FFT upsample ×{factor} → {fs1:.0f} Hz + trim "
                                f"({cfg.trim_head_sec:.0f}s/{cfg.trim_tail_sec:.0f}s)",
          "ylabel": "ADC",
          "traces": [{"label": "upsampled", "t": t1, "y": up, "color": faint, "lw": 0.5, "alpha": 1}]},
@@ -91,13 +98,15 @@ def compute_channel_stages(raw_signal, src_fs, cfg=PPG, invert=None, base_color=
     return stages
 
 
-def compute_channel_stages_full(raw_signal, src_fs, cfg=PPG, invert=None, base_color="#22c55e"):
+def compute_channel_stages_full(raw_signal, src_fs, cfg=PPG, invert=None, base_color="#22c55e",
+                                native_fs=None):
     """Preprocessing stages + beat-finding stages for one channel.
 
     Returns (pre_stages, beat_stages). Convenience wrapper so callers can show
     both groups; the final band-passed trace from preprocessing feeds beats.
     """
-    pre = compute_channel_stages(raw_signal, src_fs, cfg, invert=invert, base_color=base_color)
+    pre = compute_channel_stages(raw_signal, src_fs, cfg, invert=invert,
+                                 base_color=base_color, native_fs=native_fs)
     filtered = pre[-1]["traces"][0]["y"]          # stage 5 (bandpass)
     t = pre[-1]["traces"][0]["t"]
     beats = compute_beat_stages(filtered, t, cfg, base_color=base_color)
@@ -192,20 +201,24 @@ def compute_beat_stages(filtered, t, cfg=PPG, base_color="#22c55e", move_regions
 
 
 def compute_movement_stage(watch, cfg=PPG):
-    """Accelerometer preprocessing (HTML-faithful): jerk energy on the 256 Hz
+    """Accelerometer preprocessing (HTML-faithful): jerk energy on the base-rate
     accel, energy FFT-upsampled + smoothed at 1024 Hz, plus the movement regions.
 
-    Returns dict {t, ax, ay, az, energy, threshold, regions} on the 1024 Hz
-    trimmed timeline.
+    Honours watch["native_fs"] the same way prepare_watch does (base rate + integer
+    upsample factor), so watch-13 (512 Hz) upsamples x2 to 1024 like the real
+    pipeline. Returns dict {t, ax, ay, az, energy, threshold, regions} on the
+    1024 Hz trimmed timeline.
     """
     from .preprocess import _watch_movement_energy, build_move_regions
     src_fs = watch["fs"]
     if not all(c in watch for c in ("acc_x", "acc_y", "acc_z")):
         return None
-    acc256 = {c: resample_linear(watch[c], src_fs, cfg.fs_orig)
-              for c in ("acc_x", "acc_y", "acc_z")}
-    acc_up = {c: upsample_fft(acc256[c], cfg.upsample_factor) for c in acc256}
-    energy_full = _watch_movement_energy(acc256, cfg)
+    base_fs = float(watch.get("native_fs", cfg.fs_orig))
+    factor = int(round(cfg.target_fs / base_fs))
+    acc_base = {c: resample_linear(watch[c], src_fs, base_fs)
+                for c in ("acc_x", "acc_y", "acc_z")}
+    acc_up = {c: upsample_fft(acc_base[c], factor) for c in acc_base}
+    energy_full = _watch_movement_energy(acc_base, cfg, base_fs, factor)
 
     n = min(min(v.size for v in acc_up.values()), energy_full.size)
     fs1 = cfg.target_fs

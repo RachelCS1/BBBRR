@@ -75,12 +75,16 @@ class SyncResult:
 # ----------------------------------------------------------------------
 # Stage 1 — pre-processing -> MSD fiducials  (same pipeline for both signals)
 # ----------------------------------------------------------------------
-def msd_series(raw, raw_fs, label, invert, cfg=PPG):
-    """Raw pulse channel -> the existing 1024 Hz beat pipeline -> MSD times.
+def msd_series(raw, raw_fs, label, invert, cfg=PPG, fiducial="MSD"):
+    """Raw pulse channel -> the existing 1024 Hz beat pipeline -> fiducial times.
 
     resample to fs_orig -> FFT-upsample x4 -> trim head/tail -> analyze_ppg_channel
     (invert -> band-pass -> LPF-derivative beats -> SS refine -> MSD). Uses the same
     clock convention as prepare_watch (t = index/fs, head-trim offset included).
+
+    `fiducial` selects which per-beat landmark drives the sync: "MSD" (default, the
+    max-slope point) or "SS" (systolic start). The chosen train is returned in
+    `msd_t` (the field name is historical — it is the matching train, either one).
     """
     x = np.asarray(raw, np.float64)
     at256 = resample_linear(x, raw_fs, cfg.fs_orig)
@@ -93,7 +97,7 @@ def msd_series(raw, raw_fs, label, invert, cfg=PPG):
     t = np.arange(lo, hi) / fs
     res = analyze_ppg_channel(sig, t, fs, channel="IR", invert=invert,
                               compute_ridge=False, move_regions=None)
-    msd = np.asarray(res.msd_idx, dtype=int)
+    msd = np.asarray(res.ss_idx if fiducial == "SS" else res.msd_idx, dtype=int)
     msd = msd[(msd >= 0) & (msd < t.size)]
     return MsdSeries(label=label, raw=x, raw_fs=float(raw_fs), t=t,
                      filtered=np.asarray(res.filtered, np.float64),
@@ -219,11 +223,15 @@ def read_rembo_pulse_wave(edf_path, cfg=REFERENCE):
     return sig, fs, name
 
 
-def _match_best(watch_msd_t, rembo_pw, rembo_fs, p, try_polarity, cfg):
-    """Try REMbo polarities, keep the one matching more beats. Returns (r, rembo_series, inv)."""
+def _match_best(watch_msd_t, rembo_pw, rembo_fs, p, try_polarity, cfg, fiducial="MSD"):
+    """Try REMbo polarities, keep the one matching more beats. Returns (r, rembo_series, inv).
+
+    `fiducial` picks which REMbo landmark train to match against (must be the SAME
+    landmark the caller used for watch_msd_t)."""
     best = None
     for inv in ([False, True] if try_polarity else [False]):
-        rs = msd_series(rembo_pw, rembo_fs, "REMbo Pulse Wave", invert=inv, cfg=cfg)
+        rs = msd_series(rembo_pw, rembo_fs, "REMbo Pulse Wave", invert=inv, cfg=cfg,
+                        fiducial=fiducial)
         r = match_offset(watch_msd_t, rs.msd_t, p)
         if best is None or r["matched"] > best[0]["matched"]:
             best = (r, rs, inv)
@@ -257,23 +265,27 @@ def _finalize(watch_msd_t, r, rs, inv, p, watch_series):
 
 
 def compute_offset(watch_ir, watch_fs, rembo_pw, rembo_fs,
-                   params=None, try_polarity=True, cfg=PPG):
+                   params=None, try_polarity=True, cfg=PPG, fiducial="MSD"):
     """Full sync from RAW signals -> SyncResult (with watch diagnostics for the inspector).
 
-    The watch IR uses the standard PPG inversion (cfg.invert_ppg); the REMbo Pulse
-    Wave polarity is unknown, so both are tried and the better match is kept.
+    The watch channel uses the standard PPG inversion (cfg.invert_ppg); the REMbo Pulse
+    Wave polarity is unknown, so both are tried and the better match is kept. `fiducial`
+    ("MSD" | "SS") selects the landmark used on BOTH sides (watch-13 uses "SS").
     """
     p = _params(params)
-    ws = msd_series(watch_ir, watch_fs, "watch IR", invert=cfg.invert_ppg, cfg=cfg)
-    r, rs, inv = _match_best(ws.msd_t, rembo_pw, rembo_fs, p, try_polarity, cfg)
+    ws = msd_series(watch_ir, watch_fs, "watch", invert=cfg.invert_ppg, cfg=cfg,
+                    fiducial=fiducial)
+    r, rs, inv = _match_best(ws.msd_t, rembo_pw, rembo_fs, p, try_polarity, cfg, fiducial=fiducial)
     return _finalize(ws.msd_t, r, rs, inv, p, ws)
 
 
 def offset_from_msd(watch_msd_t, rembo_pw, rembo_fs,
-                    params=None, try_polarity=True, cfg=PPG):
-    """Light entry for the live pipeline: watch MSD times are ALREADY computed
-    (by analyze_ppg), so only the REMbo Pulse Wave is processed here."""
+                    params=None, try_polarity=True, cfg=PPG, fiducial="MSD"):
+    """Light entry for the live pipeline: the watch fiducial times are ALREADY computed
+    (by analyze_ppg), so only the REMbo Pulse Wave is processed here. `fiducial`
+    ("MSD" | "SS") must match the landmark used for `watch_msd_t`, and selects the
+    REMbo landmark to match against (watch-13 syncs on "SS")."""
     p = _params(params)
     watch_msd_t = np.asarray(watch_msd_t, np.float64)
-    r, rs, inv = _match_best(watch_msd_t, rembo_pw, rembo_fs, p, try_polarity, cfg)
+    r, rs, inv = _match_best(watch_msd_t, rembo_pw, rembo_fs, p, try_polarity, cfg, fiducial=fiducial)
     return _finalize(watch_msd_t, r, rs, inv, p, None)

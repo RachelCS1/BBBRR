@@ -23,42 +23,57 @@ class WatchSignals:
     move_energy: np.ndarray
     move_threshold: float
     move_regions: list               # list[(start, end)] seconds
+    sync_channel: str = None         # preferred display-name channel for MSD/SS sync
+                                     # (e.g. "Green" for watch-13); None -> caller default
+    sync_fiducial: str = None        # preferred sync fiducial "SS"|"MSD" (e.g. "SS" for
+                                     # watch-13); None -> caller default ("MSD")
 
 
-# rt_flow column -> analyzer channel name
+# file channel key -> analyzer channel name. "yellow" is the fourth wrist LED that
+# only the watch-13 file carries (read_wrist13_csv); it is absent from other watches
+# so it simply doesn't appear in `channels` for them.
 _CH_MAP = {"ppg": "Green", "red": "Red", "infra_red": "IR", "artifact": "Artifact",
-           "ecg": "ECG"}
+           "yellow": "Yellow", "ecg": "ECG"}
 
 
 def prepare_watch(watch, cfg=PPG):
     """Turn a read_watch_csv() dict into 1024 Hz channels ready for analysis.
 
-    Steps: resample each channel from the file rate to 256 Hz, FFT-upsample x4 to
-    1024 Hz, trim `trim_head_sec` / `trim_tail_sec`, and compute accelerometer
-    movement regions (jerk energy, threshold, +-margin expansion, gap merge).
+    Steps: resample each channel from the file rate to a base rate, FFT-upsample to
+    target_fs (1024 Hz), trim `trim_head_sec` / `trim_tail_sec`, and compute
+    accelerometer movement regions (jerk energy, threshold, +-margin expansion,
+    gap merge).
+
+    The base rate is cfg.fs_orig (256, upsample x4) for the 256 Hz watches, but a
+    reader may set watch["native_fs"] to resample to a different base and pick the
+    matching integer upsample factor — the watch-13 file (512 Hz, primary watch)
+    uses native_fs = 512 so it FFT-upsamples x2 straight to 1024 instead of being
+    downsampled through 256 Hz first.
     """
     src_fs = watch["fs"]
-    # 1) resample present channels to FS_ORIG (256)
-    at256 = {}
+    base_fs = float(watch.get("native_fs", cfg.fs_orig))
+    factor = int(round(cfg.target_fs / base_fs))
+    # 1) resample present channels to the base rate
+    at_base = {}
     for col, name in _CH_MAP.items():
         if col in watch:
-            at256[name] = resample_linear(watch[col], src_fs, cfg.fs_orig)
-    acc256 = {}
+            at_base[name] = resample_linear(watch[col], src_fs, base_fs)
+    acc_base = {}
     for col in ("acc_x", "acc_y", "acc_z"):
         if col in watch:
-            acc256[col] = resample_linear(watch[col], src_fs, cfg.fs_orig)
+            acc_base[col] = resample_linear(watch[col], src_fs, base_fs)
 
-    # 2) FFT upsample x4 -> 1024 Hz
-    up = {name: upsample_fft(sig, cfg.upsample_factor) for name, sig in at256.items()}
+    # 2) FFT upsample -> target_fs (1024 Hz)
+    up = {name: upsample_fft(sig, factor) for name, sig in at_base.items()}
 
     fs = cfg.target_fs
     n = min((v.size for v in up.values()), default=0)
 
-    # 2b) movement energy — HTML-faithful: jerk on the ORIGINAL 256 Hz accel
-    #     (x fs_orig), then FFT-upsample the ENERGY, then smooth at target_fs.
+    # 2b) movement energy — HTML-faithful: jerk on the base-rate accel (x base_fs),
+    #     then FFT-upsample the ENERGY, then smooth at target_fs.
     move_energy_full = None
-    if {"acc_x", "acc_y", "acc_z"} <= set(acc256):
-        move_energy_full = _watch_movement_energy(acc256, cfg)
+    if {"acc_x", "acc_y", "acc_z"} <= set(acc_base):
+        move_energy_full = _watch_movement_energy(acc_base, cfg, base_fs, factor)
         n = min(n, move_energy_full.size) if n else move_energy_full.size
 
     for k in up:
@@ -79,21 +94,27 @@ def prepare_watch(watch, cfg=PPG):
         move_energy = move_energy_full[lo:hi]
         move_regions = build_move_regions(time, move_energy, move_threshold, cfg)
 
+    # Preferred sync hints (canonical col -> display name; fiducial passthrough).
+    sync_col = watch.get("sync_channel_col")
+    sync_channel = _CH_MAP.get(sync_col) if sync_col else None
+    sync_fiducial = watch.get("sync_fiducial")
+
     return WatchSignals(time=time, fs=fs, channels=channels,
                         move_energy=move_energy, move_threshold=move_threshold,
-                        move_regions=move_regions)
+                        move_regions=move_regions, sync_channel=sync_channel,
+                        sync_fiducial=sync_fiducial)
 
 
-def _watch_movement_energy(acc256, cfg):
-    """Jerk energy on 256 Hz accel (x fs_orig) -> FFT-upsample -> smooth at target_fs
-    (matches runAnalysis @7555-7568)."""
-    ax = acc256["acc_x"]; ay = acc256["acc_y"]; az = acc256["acc_z"]
+def _watch_movement_energy(acc_base, cfg, base_fs, factor):
+    """Jerk energy on the base-rate accel (x base_fs) -> FFT-upsample by `factor`
+    -> smooth at target_fs (matches runAnalysis @7555-7568)."""
+    ax = acc_base["acc_x"]; ay = acc_base["acc_y"]; az = acc_base["acc_z"]
     n = ax.size
     e = np.zeros(n)
     if n > 1:
-        e[1:] = np.sqrt(np.diff(ax) ** 2 + np.diff(ay) ** 2 + np.diff(az) ** 2) * cfg.fs_orig
+        e[1:] = np.sqrt(np.diff(ax) ** 2 + np.diff(ay) ** 2 + np.diff(az) ** 2) * base_fs
         e[0] = e[1]
-    e_up = upsample_fft(e, cfg.upsample_factor)
+    e_up = upsample_fft(e, factor)
     return moving_average(e_up, int(round(cfg.target_fs * cfg.move_smooth_sec)))
 
 

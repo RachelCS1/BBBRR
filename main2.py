@@ -51,6 +51,7 @@ CHANNELS = {
     "Green":    ("ppg",       "#22c55e"),
     "Red":      ("red",       "#ef4444"),
     "IR":       ("infra_red", "#a855f7"),
+    "Yellow":   ("yellow",    "#eab308"),
     "Artifact": ("artifact",  "#38bdf8"),
 }
 
@@ -84,9 +85,11 @@ def main(argv=None):
 
     print(f"[Watch preprocessing]  {os.path.basename(csv_path)}")
     watch = read_watch_auto(csv_path)          # real-time (rt_flow) or monitor CSV
+    _base_fs = float(watch.get("native_fs", PPG.fs_orig))
+    _factor = int(round(PPG.target_fs / _base_fs))
     print(f"  file rate {watch['fs']:.1f} Hz, {watch['time'][-1]:.0f}s | "
           f"invert={PPG.invert_ppg}  band {PPG.ppg_hp_hz}-{PPG.ppg_lp_hz} Hz order {PPG.ppg_filter_order} | "
-          f"upsample x{PPG.upsample_factor} -> {PPG.target_fs:.0f} Hz")
+          f"base {_base_fs:.0f} Hz upsample x{_factor} -> {PPG.target_fs:.0f} Hz")
     window = tuple(args.window) if args.window else None
 
     # Movement first — its regions gate the LPF-derivative beat detector (as in the HTML).
@@ -107,7 +110,8 @@ def main(argv=None):
             print(f"  ! channel '{name}' (column '{col}') not in file — skipped")
             continue
         stages = compute_channel_stages(watch[col], watch["fs"], PPG,
-                                        invert=PPG.invert_ppg, base_color=color)
+                                        invert=PPG.invert_ppg, base_color=color,
+                                        native_fs=watch.get("native_fs"))
         viz.plot_preprocess_stages(name, stages, window=window, base_color=color)
         n_figs += 1
         msg = f"  {name:<9} {len(stages)} preprocessing stages"

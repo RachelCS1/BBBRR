@@ -65,7 +65,7 @@ DEFAULT_RECORDING = os.path.join(
     "Data", "Exp1", "recordings data", "001")
 
 CHANNEL_COLORS = {"Green": "#22c55e", "Red": "#ef4444",
-                  "IR": "#a855f7", "Artifact": "#38bdf8"}
+                  "IR": "#a855f7", "Yellow": "#eab308", "Artifact": "#38bdf8"}
 ENV_PARAMS = ("RSA", "RIIV", "AUC")     # the per-beat-series envelope params
 
 # per-method tuning constants (edit here to explore; prominence is on the CLI)

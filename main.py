@@ -110,18 +110,31 @@ def run_sync(edf_path, ppg_results, sig):
     Uses the watch IR MSD fiducials already computed by analyze_ppg and the REMbo
     Pulse Wave; independent of the respiration signals being compared.
     """
-    print("\n[Sync]  IR-PPG MSD (watch <-> REMbo)")
-    ir = ppg_results.get("IR")
-    if ir is None or len(ir.msd_idx) == 0:
-        print("  no watch IR MSD available — using offset 0")
+    # Which watch LED + fiducial to cross-correlate against the REMbo Pulse Wave.
+    # Default IR / MSD (legacy finger watches). watch-13 sets sig.sync_channel="Green"
+    # (its wrist IR is too weak) and sig.sync_fiducial="SS" (SS lined up best), applied
+    # to BOTH sides. Fall back to IR, then any LED that has the chosen fiducial.
+    chan = getattr(sig, "sync_channel", None) or "IR"
+    fiducial = getattr(sig, "sync_fiducial", None) or "MSD"
+    fid_attr = "ss_idx" if fiducial == "SS" else "msd_idx"
+    def _fid(res):
+        return np.asarray(getattr(res, fid_attr), dtype=int) if res is not None else np.zeros(0, int)
+    src = ppg_results.get(chan)
+    if src is None or _fid(src).size == 0:
+        chan = next((c for c in (chan, "IR", "Green", "Red", "Yellow")
+                     if ppg_results.get(c) is not None and _fid(ppg_results[c]).size), chan)
+        src = ppg_results.get(chan)
+    print(f"\n[Sync]  PPG-{fiducial} (watch {chan} <-> REMbo)")
+    if src is None or _fid(src).size == 0:
+        print(f"  no watch {fiducial} available — using offset 0")
         return 0.0
-    watch_msd_t = sig.time[np.asarray(ir.msd_idx, dtype=int)]
+    watch_msd_t = sig.time[_fid(src)]
     try:
         pw, pwfs, name = read_rembo_pulse_wave(edf_path)
     except Exception as e:
         print(f"  no REMbo Pulse Wave ({e}) — using offset 0")
         return 0.0
-    res = offset_from_msd(watch_msd_t, pw, pwfs)
+    res = offset_from_msd(watch_msd_t, pw, pwfs, fiducial=fiducial)
     flag = ("LOW — " + res.reason) if res.low_confidence else "OK"
     print(f"  Pulse Wave '{name}' @ {pwfs:.0f} Hz | REMbo polarity "
           f"{'inverted' if res.polarity < 0 else 'as-is'}")

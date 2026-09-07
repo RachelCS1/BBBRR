@@ -27,7 +27,7 @@ RR_EDGES = [15.0, 22.0, 30.0]
 CAT_LABELS = ["<15", "15-22", "22-30", ">30"]
 SEG_SEC, HOP_SEC, F_LO, F_HI, WIN_SEC = 30.0, 5.0, 0.10, 0.80, 48.0
 GRID_FS = 10.0
-CHANNELS = ("Green", "Red", "IR", "Artifact")
+CHANNELS = ("Green", "Red", "IR", "Yellow", "Artifact")
 PARAMS = ("RSA", "RIIV", "AUC")
 RECON = ("ma", "spl", "ssp")
 

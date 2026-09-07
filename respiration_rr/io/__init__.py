@@ -1,5 +1,7 @@
 from .edf_reader import EDFReader, read_edf_channel
-from .csv_reader import read_watch_csv, read_monitor_csv, read_watch_auto, read_poly_csv
+from .csv_reader import (read_watch_csv, read_monitor_csv, read_wrist13_csv,
+                         read_watch_auto, read_poly_csv)
 
 __all__ = ["EDFReader", "read_edf_channel", "read_watch_csv",
-           "read_monitor_csv", "read_watch_auto", "read_poly_csv"]
+           "read_monitor_csv", "read_wrist13_csv", "read_watch_auto",
+           "read_poly_csv"]

@@ -37,7 +37,7 @@ import numpy as np
 import bw_bp_sweep as S
 import bw_category_map as CM      # RR_EDGES / HR_EDGES / _labels
 
-REF_LEDS = ("Green", "Red", "IR")
+REF_LEDS = ("Green", "Red", "IR", "Yellow")
 
 # (name, detrend post-step?, detrend baseline, fundamental ridge?)
 METHOD_SPECS = [

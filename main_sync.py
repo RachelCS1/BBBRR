@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 """
-main_sync.py — inspect the IR-PPG MSD time-synchronisation with ONE figure:
-the MSD interval (IBI) overlay, HTML-style.
+main_sync.py — inspect the PPG time-synchronisation with ONE figure:
+the fiducial-interval (IBI) overlay, HTML-style.
 
-After the offset is applied, the watch and REMbo MSD interval-over-time curves
-(the shared HRV pattern) should coincide beat-for-beat over the whole recording.
+The sync fiducial follows the file: legacy watches use finger-IR MSD; watch-13 uses
+Green SS (both set via the reader's sync_channel_col / sync_fiducial hints). After the
+offset is applied, the watch and REMbo interval-over-time curves (the shared HRV
+pattern) should coincide beat-for-beat over the whole recording.
 That overlay is the definitive "did the sync work?" check — the raw pulse
 WAVEFORMS differ by sensor/site and are not expected to overlay, only the timing.
 
@@ -72,13 +74,14 @@ def _cap(sig, fs, minutes):
 
 
 # ----------------------------------------------------------------------
-# The one figure — MSD interval (IBI) overlay
+# The one figure — fiducial interval (IBI) overlay
 # ----------------------------------------------------------------------
-def fig_interval(plt, res, rid):
-    """Watch vs REMbo MSD interval-over-time, overlaid after the shift.
+def fig_interval(plt, res, rid, fiducial="MSD"):
+    """Watch vs REMbo `fiducial`-interval-over-time, overlaid after the shift.
 
-    Full recording on top, a 40 s zoom below. Y is clamped to the physiological
-    range so a stray outlier interval cannot stretch the scale.
+    `fiducial` ("MSD" | "SS") is only the label — the data in res.watch/res.rembo is
+    already the fiducial the sync ran on. Full recording on top, a 40 s zoom below.
+    Y is clamped to the physiological range so a stray outlier cannot stretch the scale.
     """
     ws, rs = res.watch, res.rembo
     off = res.offset_sec
@@ -97,7 +100,7 @@ def fig_interval(plt, res, rid):
 
     flag = "  ⚠ LOW CONFIDENCE" if res.low_confidence else ""
     fig, ax = plt.subplots(2, 1, figsize=(14, 7.4))
-    fig.suptitle(f"MSD interval overlay — {rid}   |   offset {off:+.3f} s  ·  "
+    fig.suptitle(f"{fiducial} interval overlay — {rid}   |   offset {off:+.3f} s  ·  "
                  f"matched {res.matched} ({res.matched_frac*100:.0f}%)  ·  "
                  f"median {res.median_resid_ms:.1f} ms  ·  {res.prominence:.1f}σ{flag}",
                  fontweight="bold", color=("#b91c1c" if res.low_confidence else "#111827"))
@@ -105,7 +108,7 @@ def fig_interval(plt, res, rid):
         a.plot(rt, ri, "-o", color=R, ms=3, lw=1.1, label=f"REMbo IBI ({ri.size})")
         a.plot(wt + off, wi, "-o", color=W, ms=3.4, lw=1.1, alpha=0.85,
                label=f"watch IBI (shift {off:+.2f}s)")
-        a.set_ylabel("MSD interval (ms)"); a.set_ylim(ylo, yhi)
+        a.set_ylabel(f"{fiducial} interval (ms)"); a.set_ylim(ylo, yhi)
         a.legend(loc="upper right", fontsize=8); a.grid(True, alpha=0.15)
     if hi > lo:
         ax[0].set_xlim(lo, hi)
@@ -122,7 +125,7 @@ def fig_interval(plt, res, rid):
 # Driver
 # ----------------------------------------------------------------------
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="MSD interval-overlay inspector for the IR-PPG sync")
+    ap = argparse.ArgumentParser(description="Fiducial interval-overlay inspector for the PPG sync")
     ap.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--recording", default=None, help="recording id, e.g. Exp1/001")
@@ -144,15 +147,21 @@ def main(argv=None):
 
     print(f"Recording : {rid}")
     watch = read_watch_auto(csv_path)
-    wir, wfs = watch.get("infra_red"), watch.get("fs")
+    # Default sync channel is finger IR / MSD; the watch-13 reader overrides to Green
+    # ("ppg") because its wrist IR is too weak, and to the SS fiducial on both sides.
+    sync_col = watch.get("sync_channel_col", S.SYNC.msd_channel_col)
+    sync_fid = watch.get("sync_fiducial", S.SYNC.msd_fiducial)
+    wir, wfs = watch.get(sync_col), watch.get("fs")
     if wir is None:
-        ap.error("watch CSV has no infra_red channel")
+        ap.error(f"watch CSV has no '{sync_col}' channel for sync")
+    print(f"Sync channel: {sync_col} | fiducial: {sync_fid}")
     rpw, rfs, rname = S.read_rembo_pulse_wave(edf_path)
     wir = _cap(wir, wfs, args.minutes)
     rpw = _cap(rpw, rfs, args.minutes)
 
     print("Computing offset ...")
-    res = S.compute_offset(wir, wfs, rpw, rfs, try_polarity=not args.no_polarity)
+    res = S.compute_offset(wir, wfs, rpw, rfs, try_polarity=not args.no_polarity,
+                           fiducial=sync_fid)
     print(f"  offset {res.offset_sec:+.3f} s | REMbo polarity "
           f"{'inverted' if res.polarity < 0 else 'as-is'} | matched {res.matched} "
           f"({res.matched_frac*100:.0f}%) | median {res.median_resid_ms:.1f} ms | "
@@ -162,7 +171,7 @@ def main(argv=None):
     matplotlib.use("TkAgg" if args.show else "Agg")
     import matplotlib.pyplot as plt
 
-    fig = fig_interval(plt, res, rid)
+    fig = fig_interval(plt, res, rid, fiducial=sync_fid)
     if args.show:
         print("\nOpening figure — close the window to exit.")
         plt.show()
