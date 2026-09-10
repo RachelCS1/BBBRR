@@ -141,6 +141,19 @@ BW_LOCAL_PROM_WIN_SEC = 4.0
 BW_SHOW_GLOBAL_BAND = True          # BW: show the global-band (0.1-1.0) curves
 BW_SHOW_PERCAT_BAND = False         # BW: show the per-category-band curves (off for now)
 
+# ---- Artifact BW, HIGH-rate bin ONLY: extra validated curve (added, not replacing) ----
+# Chain validated in bw_detector_eval on the high segment: band 0.1-1.0 -> detrend hp -> non-greedy
+# find_peaks (robust P95-P5 range) -> 30-60 bpm rate-gate. Drawn only for BW_HI_CHANNEL in the
+# high bin's spans; every other bin/channel keeps the global/per-cat BW above.
+BW_HI_CHANNEL = "Artifact"
+BW_HI_BAND = (0.1, 1.0)
+BW_HI_HP = 0.3                       # detrend high-pass (Hz)
+BW_HI_PROM = 0.01                   # find_peaks prominence (fraction of robust range)
+BW_HI_DIST = 0.6                    # min seconds between peaks
+BW_HI_WLEN = 4.0                   # local-prominence window (s)
+BW_HI_RATE_LO = 30.0               # rate-gate slow bound (bpm) -> gap-fill
+BW_HI_RATE_HI = 60.0               # rate-gate fast bound (bpm) -> remove too-close
+
 
 def _highpass(y, fs, cutoff, order=2):
     """Zero-phase Butterworth high-pass (remove baseline below `cutoff` Hz)."""
@@ -392,6 +405,117 @@ def bw_per_category_series(raw, t, fs, mr, runs, offset, local_frac=None, local_
     return ex, ey, bs, rr_t, rr
 
 
+def _bw_hi_peaks(sig, fs):
+    """Non-greedy find_peaks for the Artifact-BW-high curve (robust P95-P5 range floor)."""
+    from scipy.signal import find_peaks
+    sig = np.asarray(sig, np.float64)
+    if sig.size < 3:
+        return np.zeros(0, int)
+    rng = float(np.percentile(sig, 95) - np.percentile(sig, 5)) or 1.0
+    dist = max(1, int(round(fs * BW_HI_DIST)))
+    wlen = max(3, int(round(fs * BW_HI_WLEN)))
+    pk, _ = find_peaks(sig, prominence=BW_HI_PROM * rng, distance=dist, wlen=wlen)
+    return np.asarray(pk, int)
+
+
+def _bw_hi_rate_gate(times, t, tr):
+    """Fixed 30-60 bpm gate: remove peaks closer than 60/RATE_HI s (keep the taller on tr),
+    fill gaps longer than 60/RATE_LO s with the tallest local max."""
+    imin, imax = 60.0 / BW_HI_RATE_HI, 60.0 / BW_HI_RATE_LO
+    pk = np.sort(np.asarray(times, float))
+    if pk.size == 0:
+        return pk
+    val = lambda tt: float(np.interp(tt, t, tr))
+    kept = [pk[0]]
+    for x in pk[1:]:
+        if x - kept[-1] < imin:
+            if val(x) > val(kept[-1]):
+                kept[-1] = x
+        else:
+            kept.append(x)
+    out = [kept[0]]
+    for x in kept[1:]:
+        a = out[-1]; guard = 0
+        while x - a > imax and guard < 10:
+            m = (t > a + imin * 0.5) & (t < x - imin * 0.5)
+            if m.sum() < 3:
+                break
+            xs, ys = t[m], tr[m]
+            loc = np.where((ys[1:-1] > ys[:-2]) & (ys[1:-1] > ys[2:]))[0] + 1
+            if loc.size == 0:
+                break
+            cand = float(xs[loc[np.argmax(ys[loc])]])
+            if cand - a < imin or x - cand < imin:
+                break
+            out.append(cand); a = cand; guard += 1
+        out.append(x)
+    return np.array(sorted(out), float)
+
+
+def bw_artifact_high_series(raw, t, fs, mr, runs, offset):
+    """Artifact BW on the HIGH bin ONLY (rb == last): band 0.1-1.0 -> detrend hp -> non-greedy
+    find_peaks -> 30-60 gate; keep the part inside the high runs. Watch clock. Returns
+    (env_x, env_y, bs, rr_t, rr) — empty arrays if there is no high-bin span."""
+    from respiration_rr.ppg.dsp import bandpass_filter
+    from respiration_rr.ppg.respiration import _rr_from_starts, _rr_gate_args
+    t = np.asarray(t, np.float64); raw = np.asarray(raw, np.float64)
+    idx_of, rb_of = _run_indexer(runs)
+    hi_bin = len(RR_EDGES)                                  # highest bin index (30+)
+    in_hi = idx_of(t + offset) >= 0
+    in_hi[in_hi] = rb_of[idx_of(t + offset)[in_hi]] == hi_bin
+    if not in_hi.any():
+        z = np.zeros(0)
+        return z, z, z, z, z
+    tr = bandpass_filter(raw, fs, BW_HI_BAND[0], BW_HI_BAND[1], PPG.bw_filter_order)["filtered"]
+    tr = _highpass(tr, fs, BW_HI_HP)
+    bs = _bw_hi_rate_gate(t[_bw_hi_peaks(tr, fs)], t, tr)
+    kb = idx_of(bs + offset) >= 0                           # keep peaks inside high spans
+    kb[kb] = rb_of[idx_of(bs + offset)[kb]] == hi_bin
+    bs = bs[kb]
+    rr_t, rr = _rr_from_starts(bs, *_rr_gate_args(PPG, mr))
+    return t[in_hi], tr[in_hi], bs, rr_t, rr
+
+
+def bw_artifact_hybrid_series(raw, t, fs, mr, runs, offset):
+    """WHOLE-recording Artifact BW: global/global (0.1-1.0 band-pass + pipeline peak detection)
+    everywhere, EXCEPT the high bin (rb == last) where it uses the validated chain
+    (detrend hp + non-greedy find_peaks + 30-60 gate). Returns a stitched trace + hybrid peaks."""
+    from respiration_rr.ppg.dsp import bandpass_filter
+    from respiration_rr.ppg.respiration import (_breath_starts_raw, _rr_from_starts, _rr_gate_args)
+    t = np.asarray(t, np.float64); raw = np.asarray(raw, np.float64)
+    idx_of, rb_of = _run_indexer(runs)
+    hi_bin = len(RR_EDGES)                                  # highest bin index (30+)
+
+    def bins_of(times):
+        r = idx_of(np.asarray(times) + offset)
+        out = np.full(np.shape(times), -1, int)
+        ok = r >= 0
+        out[ok] = rb_of[r[ok]]
+        return out
+
+    # global/global: standard whole-band trace + pipeline peak detection
+    tr_g = bandpass_filter(raw, fs, PPG.bw_band_low_hz, PPG.bw_band_high_hz,
+                           PPG.bw_filter_order)["filtered"]
+    bw_prom = getattr(PPG, "bw_prominence", None) or PPG.breath_start_prominence
+    bs_g = t[np.asarray(_breath_starts_raw(tr_g, fs, bw_prom, t=t, cfg=PPG, move_regions=mr), int)]
+    # high chain: detrended band + non-greedy find_peaks + 30-60 gate
+    tr_h = _highpass(bandpass_filter(raw, fs, BW_HI_BAND[0], BW_HI_BAND[1],
+                                     PPG.bw_filter_order)["filtered"], fs, BW_HI_HP)
+    bs_h = _bw_hi_rate_gate(t[_bw_hi_peaks(tr_h, fs)], t, tr_h)
+    # stitched display trace: global band, swapped to the detrended band inside high spans
+    in_hi = bins_of(t) == hi_bin
+    ey = tr_g.copy(); ey[in_hi] = tr_h[in_hi]
+    # hybrid peaks: global peaks OUTSIDE high, high-chain peaks INSIDE high
+    keep = []
+    if bs_g.size:
+        keep.append(bs_g[bins_of(bs_g) != hi_bin])
+    if bs_h.size:
+        keep.append(bs_h[bins_of(bs_h) == hi_bin])
+    bs = np.sort(np.concatenate(keep)) if keep else np.zeros(0)
+    rr_t, rr = _rr_from_starts(bs, *_rr_gate_args(PPG, mr))
+    return t, ey, bs, rr_t, rr
+
+
 def _deepest_extremum(env_x, env_y, t0, t1, use_valleys):
     """Time of the deepest interior local extremum (valley if use_valleys) of the
     envelope strictly within (t0, t1), or None."""
@@ -631,6 +755,10 @@ def _plot_bw_into(axA, axB, ch, raw, t, fs, mr, offset, runs, ref_t, ref_r, resu
             local_frac=BW_LOCAL_PROM_FRAC, local_win=BW_LOCAL_PROM_WIN_SEC)
     glbs_p, glrt_p = glbs + offset, glrt_w + offset
     plbs_p, plrt_p = plbs + offset, plrt_w + offset
+    # Artifact BW hybrid — global/global everywhere, validated chain in the HIGH bin (whole recording)
+    hi_ex = hi_ey = hi_bs = hi_rt_w = hi_rr = np.zeros(0)
+    if ch == BW_HI_CHANNEL:
+        hi_ex, hi_ey, hi_bs, hi_rt_w, hi_rr = bw_artifact_hybrid_series(raw, t, fs, mr, runs, offset)
 
     # ---- top: BW traces + breath-starts (global band = blue trace, per-cat band = red) ----
     if BW_SHOW_GLOBAL_BAND and gex.size:
@@ -645,7 +773,13 @@ def _plot_bw_into(axA, axB, ch, raw, t, fs, mr, offset, runs, ref_t, ref_r, resu
         if BW_SHOW_LOCAL and plbs_p.size:
             axA.plot(plbs_p, np.interp(plbs_p, cex_p, cey), "o", ms=7, mfc="none", mec="#16a34a",
                      mew=1.3, label="per-cat: adaptive-local")
-    allv = np.concatenate([v for v in (gey, cey) if np.size(v)])
+    if ch == BW_HI_CHANNEL and hi_ex.size:
+        axA.plot(hi_ex + offset, hi_ey, "-", color="#7c3aed", lw=0.9, alpha=0.85,
+                 label="Artifact BW hybrid (global; HIGH=detrend+gate)")
+        if hi_bs.size:
+            axA.plot(hi_bs + offset, np.interp(hi_bs, hi_ex, hi_ey), "D", ms=6, mfc="none",
+                     mec="#7c3aed", mew=1.6, label="hybrid peaks")
+    allv = np.concatenate([v for v in (gey, cey, hi_ey) if np.size(v)])
     if allv.size:
         lo, hi = np.percentile(allv, [1, 99]); pad = 0.1 * (hi - lo + 1e-9)
         axA.set_ylim(lo - pad, hi + pad)
@@ -668,8 +802,14 @@ def _plot_bw_into(axA, axB, ch, raw, t, fs, mr, offset, runs, ref_t, ref_r, resu
     if BW_SHOW_LOCAL and BW_SHOW_PERCAT_BAND:
         axB.plot(plrt_p, plrr, ".-", color="#16a34a", ms=3, lw=0.9, alpha=0.9, label="per-cat/adaptive")
         pl_mae, _, _ = _mae_by_category(plrt_w, plrr, offset, ref_t, ref_r, runs)
+    hi_mae = np.nan
+    if ch == BW_HI_CHANNEL and hi_rt_w.size:
+        axB.plot(hi_rt_w + offset, hi_rr, ".-", color="#7c3aed", ms=4, lw=1.0, alpha=0.95,
+                 label="Artifact BW hybrid")
+        hi_mae, _, _ = _mae_by_category(hi_rt_w, hi_rr, offset, ref_t, ref_r, runs)
     loc_str = f"  glob+adapt={gl_mae:.2f}  cat+adapt={pl_mae:.2f}" if BW_SHOW_LOCAL else ""
-    axB.set_title(f"BW MAE  global={g_mae:.2f}  per-cat={c_mae:.2f}{loc_str}", fontsize=9)
+    hi_str = f"  hybrid={hi_mae:.2f}" if (ch == BW_HI_CHANNEL and np.isfinite(hi_mae)) else ""
+    axB.set_title(f"BW MAE  global={g_mae:.2f}  per-cat={c_mae:.2f}{loc_str}{hi_str}", fontsize=9)
     axB.legend(fontsize=5.5, ncol=2, loc="upper right")
 
     def _fmt(d):
