@@ -54,13 +54,18 @@ def _find_inputs(folder):
 def discover(data_root):
     out = []
     for exp in sorted(glob.glob(os.path.join(data_root, "Exp*"))):
-        rec_root = os.path.join(exp, "recordings data")
-        if not os.path.isdir(rec_root):
-            continue
-        for folder in sorted(glob.glob(os.path.join(rec_root, "*"))):
-            edf, csv = _find_inputs(folder)
-            if edf and csv:
-                out.append((f"{os.path.basename(exp)}/{os.path.basename(folder)}", edf, csv))
+        for sub in ("recordings data", "Test"):          # Test/: watch-13 (Exp3) lives here
+            rec_root = os.path.join(exp, sub)
+            if not os.path.isdir(rec_root):
+                continue
+            for folder in sorted(glob.glob(os.path.join(rec_root, "*"))):
+                edf, csv = _find_inputs(folder)
+                if edf and csv:
+                    out.append((f"{os.path.basename(exp)}/{os.path.basename(folder)}", edf, csv))
+    rf = os.environ.get("REC_FILTER")          # e.g. REC_FILTER=Exp3 or "Exp3/003,Exp3/004"
+    if rf:
+        subs = [s.strip() for s in rf.split(",") if s.strip()]
+        out = [r for r in out if any(s in r[0] for s in subs)]
     return out
 
 
