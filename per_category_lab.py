@@ -121,6 +121,7 @@ DETREND_ENV_GATE_WIN = 0.0
 #   "legacy"    — legacy_detrend (FFT band-pass + peak-envelope midline + env-fence).
 DETREND_METHOD = "hp_percat"        # "hp_percat" | "lower_env" | "legacy"
 SHOW_GLOBAL = False                 # per-beat: show the whole-recording global curve
+SHOW_PERCAT = False                 # per-beat: show the per-category (red) curve
 SHOW_DETREND = True                 # per-beat: show the per-category detrend (valleys) curve
 SHOW_DETREND_PEAKS = False          # per-beat: show the detrend+MAXIMA test curve
 # Rate-aware per-category HIGH-PASS cutoff (Hz) for DETREND_METHOD="hp_percat": remove the
@@ -418,10 +419,9 @@ def _bw_hi_peaks(sig, fs):
     return np.asarray(pk, int)
 
 
-def _bw_hi_rate_gate(times, t, tr):
-    """Fixed 30-60 bpm gate: remove peaks closer than 60/RATE_HI s (keep the taller on tr),
-    fill gaps longer than 60/RATE_LO s with the tallest local max."""
-    imin, imax = 60.0 / BW_HI_RATE_HI, 60.0 / BW_HI_RATE_LO
+def _bw_gate(times, t, tr, imin, imax):
+    """Rate gate on peak TIMES (maxima on tr): remove peaks closer than imin s (keep the taller),
+    fill gaps longer than imax s with the tallest local max. imin/imax = 60/fast, 60/slow bpm."""
     pk = np.sort(np.asarray(times, float))
     if pk.size == 0:
         return pk
@@ -468,7 +468,7 @@ def bw_artifact_high_series(raw, t, fs, mr, runs, offset):
         return z, z, z, z, z
     tr = bandpass_filter(raw, fs, BW_HI_BAND[0], BW_HI_BAND[1], PPG.bw_filter_order)["filtered"]
     tr = _highpass(tr, fs, BW_HI_HP)
-    bs = _bw_hi_rate_gate(t[_bw_hi_peaks(tr, fs)], t, tr)
+    bs = _bw_gate(t[_bw_hi_peaks(tr, fs)], t, tr, 60.0 / BW_HI_RATE_HI, 60.0 / BW_HI_RATE_LO)
     kb = idx_of(bs + offset) >= 0                           # keep peaks inside high spans
     kb[kb] = rb_of[idx_of(bs + offset)[kb]] == hi_bin
     bs = bs[kb]
@@ -501,16 +501,26 @@ def bw_artifact_hybrid_series(raw, t, fs, mr, runs, offset):
     # high chain: detrended band + non-greedy find_peaks + 30-60 gate
     tr_h = _highpass(bandpass_filter(raw, fs, BW_HI_BAND[0], BW_HI_BAND[1],
                                      PPG.bw_filter_order)["filtered"], fs, BW_HI_HP)
-    bs_h = _bw_hi_rate_gate(t[_bw_hi_peaks(tr_h, fs)], t, tr_h)
+    bs_h = _bw_gate(t[_bw_hi_peaks(tr_h, fs)], t, tr_h, 60.0 / BW_HI_RATE_HI, 60.0 / BW_HI_RATE_LO)
     # stitched display trace: global band, swapped to the detrended band inside high spans
     in_hi = bins_of(t) == hi_bin
     ey = tr_g.copy(); ey[in_hi] = tr_h[in_hi]
-    # hybrid peaks: global peaks OUTSIDE high, high-chain peaks INSIDE high
-    keep = []
-    if bs_g.size:
-        keep.append(bs_g[bins_of(bs_g) != hi_bin])
-    if bs_h.size:
-        keep.append(bs_h[bins_of(bs_h) == hi_bin])
+    # hybrid peaks: high-chain peaks INSIDE high (already 30-60 gated); global peaks OUTSIDE high,
+    # rate-gated PER CATEGORY (each non-high run gets its own _bin_rate_range bounds; gating is done
+    # run-by-run so a gap-fill never bridges across a category boundary).
+    keep = [bs_h[bins_of(bs_h) == hi_bin]] if bs_h.size else []
+    for run in runs:
+        rb = run["rb"]
+        if rb == hi_bin:
+            continue
+        a0w, a1w = run["a0"] - offset, run["a1"] - offset      # REMbo span -> watch clock
+        seg = bs_g[(bs_g >= a0w) & (bs_g < a1w)]
+        if seg.size:
+            lo_bpm, hi_bpm = _bin_rate_range(rb)
+            seg = _bw_gate(seg, t, ey, 60.0 / hi_bpm, 60.0 / lo_bpm)
+            seg = seg[(seg >= a0w) & (seg <= a1w)]            # keep fills inside the run
+        if seg.size:
+            keep.append(seg)
     bs = np.sort(np.concatenate(keep)) if keep else np.zeros(0)
     rr_t, rr = _rr_from_starts(bs, *_rr_gate_args(PPG, mr))
     return t, ey, bs, rr_t, rr
@@ -657,14 +667,15 @@ def _plot_channel(rid, ch, offset, runs, ref_t, ref_r, results, methods, bases,
             # ---- Stage A: envelope + breath-starts ----
             if SHOW_GLOBAL:
                 axA.plot(gex, gey, "-", color="#1d4ed8", lw=1.0, alpha=0.9, label="global env")
-            axA.plot(cex_p, cey, "-", color="#dc2626", lw=1.0, alpha=0.7, label="per-cat env")
+            if SHOW_PERCAT:
+                axA.plot(cex_p, cey, "-", color="#dc2626", lw=1.0, alpha=0.7, label="per-cat env")
             # raw per-beat samples the spline is fit through (see where it invents a peak)
             axA.plot(sx + offset, sy, ".", ms=3.5, color="#111827", alpha=0.55,
                      zorder=5, label="beat samples")
             if SHOW_GLOBAL and gbs.size:
                 axA.plot(gbs, np.interp(gbs, gex, gey) if gex.size else np.zeros(gbs.size),
                          "v", ms=5, color="#1d4ed8", label="global peaks")
-            if cbs_p.size:
+            if SHOW_PERCAT and cbs_p.size:
                 axA.plot(cbs_p, np.interp(cbs_p, cex_p, cey) if cex_p.size else np.zeros(cbs_p.size),
                          "^", ms=5, color="#dc2626", label="per-cat peaks")
             if np.size(det_y):
@@ -687,7 +698,8 @@ def _plot_channel(rid, ch, offset, runs, ref_t, ref_r, results, methods, bases,
             axB.plot(ref_t, ref_r, "-", color="#0f172a", lw=1.4, label="reference")
             if SHOW_GLOBAL:
                 axB.plot(grt, grr, ".-", color="#1d4ed8", ms=3, lw=0.7, alpha=0.6, label="global")
-            axB.plot(crt_p, crr, ".-", color="#dc2626", ms=3, lw=0.7, alpha=0.6, label="per-cat")
+            if SHOW_PERCAT:
+                axB.plot(crt_p, crr, ".-", color="#dc2626", ms=3, lw=0.7, alpha=0.6, label="per-cat")
             g_mae, g_per, g_n = _mae_by_category(np.asarray(gp.rr_time), grr, offset, ref_t, ref_r, runs)
             c_mae, c_per, c_n = _mae_by_category(crt_w, crr, offset, ref_t, ref_r, runs)
             if SHOW_DETREND:

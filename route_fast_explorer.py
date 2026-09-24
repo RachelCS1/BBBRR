@@ -29,11 +29,39 @@ OUT_DEFAULT = r"C:\Users\RACHEL~1\AppData\Local\Temp\claude\C--Users-RachelMizra
 PARAM_CH, RECON, PARAMS = "IR", "spl", ("RSA", "RIIV", "AUC")
 F_HI_DISP = 1.05
 TAU = 22.0
+ALL_CHANNELS = ("Green", "Red", "IR", "Yellow", "Artifact")   # pool for majority-agreement
+
+
+def agree_consensus(vals, tol=3.0):
+    """Center of the largest cluster of values agreeing within +-tol bpm (drops outliers)."""
+    v = np.asarray([x for x in vals if np.isfinite(x)], float)
+    if v.size == 0:
+        return np.nan
+    if v.size <= 2:
+        return float(np.median(v))
+    best, bn = None, -1
+    for c in v:
+        cl = v[np.abs(v - c) <= tol]
+        if cl.size > bn:
+            bn, best = cl.size, cl
+    return float(np.median(best))
+
+
+def ridge_prom(freqs, P, lo=0.10, hi=0.80):
+    """Per-column spectral prominence (peak/median in the RR band)."""
+    bidx = np.where((freqs >= lo) & (freqs <= hi))[0]
+    if bidx.size == 0 or P.size == 0:
+        return np.full(P.shape[1] if P.ndim == 2 else 0, np.nan)
+    Pb = P[bidx, :]; pk = Pb.max(0); med = np.median(Pb, 0)
+    return np.divide(pk, med, out=np.full_like(pk, np.nan), where=med > 0)
+
+
+PROM_TH = 3.0    # prominence gate for promagree (drop weak per-beat params before agreeing)
 
 TEMPLATE = r"""<title>Artifact raw vs BW vs route_fast — __RID__</title>
 <style>
   :root{--bg:#0c111c;--panel:#121a29;--line:#243349;--ink:#e6eef8;--mut:#8ba0ba;
-    --cyan:#22d3ee;--green:#34d399;--red:#f87171;--grey:#94a3b8;--amber:#f59e0b;--violet:#a78bfa;}
+    --cyan:#22d3ee;--green:#34d399;--red:#f87171;--grey:#94a3b8;--amber:#f59e0b;--violet:#a78bfa;--magenta:#ec4899;--lime:#84cc16;}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",system-ui,Segoe UI,sans-serif}
   .wrap{max-width:1200px;margin:0 auto;padding:18px 20px 60px}
@@ -42,7 +70,7 @@ TEMPLATE = r"""<title>Artifact raw vs BW vs route_fast — __RID__</title>
   .scores{display:flex;gap:10px;margin:8px 0 12px;flex-wrap:wrap;font-family:"IBM Plex Mono",monospace}
   .scores .s{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 13px;font-size:13px}
   .scores .s b{font-size:16px}
-  .scores .rw b{color:var(--violet)} .scores .bw b{color:var(--cyan)} .scores .rt b{color:var(--amber)}
+  .scores .rw b{color:var(--violet)} .scores .bw b{color:var(--cyan)} .scores .rt b{color:var(--amber)} .scores .ra b{color:var(--magenta)} .scores .pa b{color:var(--lime)}
   .readout{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;font-family:"IBM Plex Mono",monospace}
   .readout span{background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:5px 11px;font-size:12.5px}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 12px 8px;margin:12px 0}
@@ -56,11 +84,13 @@ TEMPLATE = r"""<title>Artifact raw vs BW vs route_fast — __RID__</title>
 </style>
 <div class="wrap">
   <h1>Artifact raw vs BW vs route_fast · <span id="rid"></span></h1>
-  <div class="sub">RAW (no band-pass) · BW (BP 0.1-1.0) · route_fast (BW if &ge;22 bpm else median IR RSA/RIIV/AUC spline) · window 48 s · categories &lt;15 / 15-22 / 22-30 / &gt;30</div>
+  <div class="sub">RAW (no band-pass) · BW (BP 0.1-1.0) · route_fast (BW if &ge;22 bpm else median IR RSA/RIIV/AUC spline) · window __WIN__ s · segment __SEG__ s · ref = segment-median RR · categories &lt;15 / 15-22 / 22-30 / &gt;30</div>
   <div class="scores">
     <div class="s rw">Artifact raw: <b id="accraw">–</b>%</div>
     <div class="s bw">Artifact BW: <b id="accbw">–</b>%</div>
     <div class="s rt">route_fast: <b id="accrt">–</b>%</div>
+    <div class="s ra">route_agree: <b id="accra">–</b>%</div>
+    <div class="s pa">promagree: <b id="accpa">–</b>%</div>
   </div>
 
   <div class="readout">
@@ -70,11 +100,13 @@ TEMPLATE = r"""<title>Artifact raw vs BW vs route_fast — __RID__</title>
     <span>BW = <b id="rbw" style="color:var(--cyan)">–</b></span>
     <span>params-med = <b id="rpar" style="color:var(--grey)">–</b></span>
     <span>route → <b id="rroute" style="color:var(--amber)">–</b></span>
+    <span>route_agree → <b id="rroute2" style="color:var(--magenta)">–</b></span>
+    <span>promagree → <b id="rroute3" style="color:var(--lime)">–</b></span>
     <span>source = <b id="rsrc">–</b></span>
   </div>
 
   <div class="panel">
-    <h2>RR over time — reference (white) · raw (violet) · BW (cyan) · route_fast (amber) · params-med (grey)</h2>
+    <h2>RR over time — reference (white) · raw (violet) · BW (cyan) · route_fast (amber) · route_agree (magenta) · promagree (lime) · params-med (grey)</h2>
     <canvas id="result" height="230"></canvas>
   </div>
 
@@ -84,6 +116,8 @@ TEMPLATE = r"""<title>Artifact raw vs BW vs route_fast — __RID__</title>
     <div class="striplab">category match — Artifact raw</div><canvas id="stripRaw" height="14"></canvas>
     <div class="striplab">category match — Artifact BW</div><canvas id="stripBw" height="14"></canvas>
     <div class="striplab">category match — route_fast</div><canvas id="stripRt" height="14"></canvas>
+    <div class="striplab">category match — route_agree</div><canvas id="stripRt2" height="14"></canvas>
+    <div class="striplab">category match — promagree</div><canvas id="stripRt3" height="14"></canvas>
     <div class="ctl"><input type="range" id="slider" min="0" value="0" step="1"><span id="pos" style="font-family:monospace;color:var(--mut);font-size:12px"></span></div>
     <div class="leg"><span><i style="background:var(--green)"></i>correct category</span><span><i style="background:var(--red)"></i>wrong</span><span><i style="background:#33415580"></i>no reference</span></div>
   </div>
@@ -95,7 +129,7 @@ TEMPLATE = r"""<title>Artifact raw vs BW vs route_fast — __RID__</title>
 </div>
 <script>
 const D = __DATA__, $ = id => document.getElementById(id);
-$('rid').textContent = D.rid; $('accraw').textContent = D.accRaw; $('accbw').textContent = D.accBw; $('accrt').textContent = D.accRoute;
+$('rid').textContent = D.rid; $('accraw').textContent = D.accRaw; $('accbw').textContent = D.accBw; $('accrt').textContent = D.accRoute; $('accra').textContent = D.accRouteAgree; $('accpa').textContent = D.accPromAgree;
 const T = D.times, nCol = T.length, F = D.freqsBpm, nBin = F.length, EDG = D.rrEdges, LO = D.loBpm, HI = D.hiBpm;
 const YMAX = 66; let cur = Math.floor(nCol/2);
 $('slider').max = nCol-1; $('slider').value = cur;
@@ -133,6 +167,8 @@ function drawResult(){const cv=$('result'),x=cv.getContext('2d'),w=cv.width=cv.c
   plot(D.bwRidge,css('--cyan'),1.2*devicePixelRatio);
   plot(D.refCol,'rgba(255,255,255,.9)',2*devicePixelRatio);
   plot(D.routeCol,css('--amber'),2.2*devicePixelRatio);
+  plot(D.routeAgreeCol,css('--magenta'),2*devicePixelRatio,[6,3]);
+  plot(D.promAgreeCol,css('--lime'),1.8*devicePixelRatio,[2,3]);
   x.strokeStyle=css('--cyan');x.setLineDash([5,4]);x.lineWidth=1.3*devicePixelRatio;x.beginPath();x.moveTo(X(cur),y1);x.lineTo(X(cur),y0);x.stroke();x.setLineDash([]);
   x.fillStyle='rgba(230,238,248,.7)';x.font=(10*devicePixelRatio)+'px monospace';[15,22,30,45].forEach(b=>x.fillText(b,3,Y(b)-2));}
 function drawSpec(){const cv=$('spec'),x=cv.getContext('2d'),w=cv.width=cv.clientWidth*devicePixelRatio,h=cv.height=220*devicePixelRatio;
@@ -147,9 +183,9 @@ function fmt(v){return (v==null||isNaN(v))?'–':(+v).toFixed(1);}
 function segAt(c){for(const s of D.segs)if(c>=s.c0&&c<=s.c1)return s;return null;}
 function update(){cur=Math.max(0,Math.min(nCol-1,cur));$('slider').value=cur;const s=segAt(cur);
   $('rt').textContent=fmt(T[cur]);$('rr').textContent=fmt(D.refCol[cur]);$('rraw').textContent=fmt(D.rawRidge[cur]);$('rbw').textContent=fmt(D.bwRidge[cur]);
-  $('rpar').textContent=s?fmt(s.par):'–';$('rroute').textContent=s?fmt(s.route):'–';$('rsrc').textContent=s?s.src:'–';
+  $('rpar').textContent=s?fmt(s.par):'–';$('rroute').textContent=s?fmt(s.route):'–';$('rroute2').textContent=s?fmt(s.route2):'–';$('rroute3').textContent=s?fmt(s.route3):'–';$('rsrc').textContent=s?s.src:'–';
   $('specT').textContent=fmt(T[cur]);$('pos').textContent=(cur+1)+' / '+nCol;
-  drawResult();drawHeat();drawStrip('stripRaw','rawOk');drawStrip('stripBw','bwOk');drawStrip('stripRt','rtOk');drawSpec();}
+  drawResult();drawHeat();drawStrip('stripRaw','rawOk');drawStrip('stripBw','bwOk');drawStrip('stripRt','rtOk');drawStrip('stripRt2','rt2Ok');drawStrip('stripRt3','rt3Ok');drawSpec();}
 ['heat','result'].forEach(id=>{const cv=$(id);cv.addEventListener('mousemove',e=>{if(e.buttons||id==='heat'){const r=cv.getBoundingClientRect();cur=Math.round((e.clientX-r.left)/r.width*(nCol-1));update();}});cv.addEventListener('click',e=>{const r=cv.getBoundingClientRect();cur=Math.round((e.clientX-r.left)/r.width*(nCol-1));update();});});
 $('slider').addEventListener('input',e=>{cur=+e.target.value;update();});
 window.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'){cur--;update();}if(e.key==='ArrowRight'){cur++;update();}});
@@ -164,18 +200,24 @@ def main():
     ap.add_argument("--edf", default=None); ap.add_argument("--watch", default=None)
     ap.add_argument("--data-root", default=S.DEFAULT_DATA_ROOT)
     ap.add_argument("--out", default=OUT_DEFAULT)
+    ap.add_argument("--window", type=float, default=None, help="STFT window (s); default = winning WIN_SEC")
+    ap.add_argument("--seg", type=float, default=None, help="categorization segment (s); default = SEG_SEC")
     args = ap.parse_args()
+    WIN_SEC = args.window if args.window is not None else globals()["WIN_SEC"]
+    SEG_SEC = args.seg if args.seg is not None else globals()["SEG_SEC"]
+    print("STFT window = %.0fs, hop = %.0fs, segment = %.0fs" % (WIN_SEC, HOP_SEC, SEG_SEC))
 
     from respiration_rr.settings import PPG as ppg
     from scipy.signal import butter, sosfiltfilt
     from main import run_reference, run_ppg, run_sync
-    from respiration_rr.rr_average import reference_average_rr
+    from respiration_rr.rr_average import reference_average_rr, reference_rr_points
 
     rid, edf, csv = ([r for r in S.discover(args.data_root) if r[0] == args.rec_id] or [S._resolve_inputs(args)])[0] \
         if args.rec_id else S._resolve_inputs(args)
     print("Recording:", rid)
     ppg_res, sig = run_ppg(csv); ref = run_reference(edf); offset = run_sync(edf, ppg_res, sig)
-    tat, tar = reference_average_rr(ref)
+    tat, tar = reference_average_rr(ref)          # 20s-averaged curve (displayed white line)
+    ref_pt, ref_pr = reference_rr_points(ref)     # per-breath points (REMbo clock) for segment-median ground truth
     fs = float(sig.fs); n = int(np.asarray(sig.channels["Artifact"]).size)
     art = np.asarray(sig.channels["Artifact"], np.float64)
 
@@ -208,58 +250,101 @@ def main():
         par_rows.append(seg_medians(tt, ridge_rr(ff, PP), segs))
     par_rows = np.array(par_rows)
 
+    # all-channel param pool (for route_agree majority-agreement + promagree)
+    allpar_rows, allprom_rows = [], []
+    for c in ALL_CHANNELS:
+        rc_res = ppg_res.get(c)
+        for p in PARAMS:
+            pr = rc_res.params.get(p) if rc_res and getattr(rc_res, "params", None) else None
+            bx = np.asarray(getattr(pr, "series_x", []), np.float64) if pr else np.zeros(0)
+            by = np.asarray(getattr(pr, "series_y", []), np.float64) if pr else np.zeros(0)
+            if bx.size < 4:
+                continue
+            env = envelope_on_grid(bx, by, RECON, g_t, ppg)
+            tt, ff, PP = stft_power(env, GRID_FS, WIN_SEC, HOP_SEC)
+            allpar_rows.append(seg_medians(tt, ridge_rr(ff, PP), segs))
+            allprom_rows.append(seg_medians(tt, ridge_prom(ff, PP), segs))
+    allpar_rows = np.array(allpar_rows) if allpar_rows else np.full((1, segs.size), np.nan)
+    allprom_rows = np.array(allprom_rows) if allprom_rows else np.full((1, segs.size), np.nan)
+
     def bin_(v):
         return int(np.digitize(v, RR_EDGES)) if np.isfinite(v) else -1
 
     seg_objs = []
     parCol = np.full(times.size, np.nan); routeCol = np.full(times.size, np.nan)
-    nseg = ok_raw = ok_bw = ok_rt = 0
+    routeAgreeCol = np.full(times.size, np.nan)
+    promAgreeCol = np.full(times.size, np.nan)
+    nseg = ok_raw = ok_bw = ok_rt = ok_rt2 = ok_rt3 = 0
     for i, s in enumerate(segs):
         c0 = int(np.searchsorted(times, s)); c1 = int(np.searchsorted(times, s + SEG_SEC)) - 1
         c1 = max(c0, min(c1, times.size - 1))
         pv = par_rows[:, i]; pv = pv[np.isfinite(pv)]
         pmed = float(np.median(pv)) if pv.size else np.nan
+        agree = agree_consensus(allpar_rows[:, i])
         bw = bw_seg[i]; raw = raw_seg[i]
         use_bw = np.isfinite(bw) and bw >= TAU
         route = bw if use_bw else (pmed if np.isfinite(pmed) else bw)
-        refv = np.interp(s + SEG_SEC / 2 + offset, tat, tar, left=np.nan, right=np.nan)
+        route2 = bw if use_bw else (agree if np.isfinite(agree) else bw)   # majority-agreement
+        pvv = allpar_rows[:, i]; ppp = allprom_rows[:, i]                  # prominence-filtered agreement
+        fm = np.isfinite(pvv); pvv = pvv[fm]; ppp = ppp[fm]
+        strong = pvv[np.isfinite(ppp) & (ppp >= PROM_TH)]
+        promag = agree_consensus(strong if strong.size >= 2 else pvv)
+        route3 = bw if use_bw else (promag if np.isfinite(promag) else bw)
+        rmask = (ref_pt >= s + offset) & (ref_pt < s + SEG_SEC + offset)   # all reference breaths in this segment
+        refv = float(np.median(ref_pr[rmask])) if rmask.any() else np.nan  # ground truth = segment-average RR
         rc = bin_(refv)
         def ok(v):
             b = bin_(v)
             return 1 if (rc >= 0 and rc == b) else (0 if rc >= 0 else -1)
-        rawOk, bwOk, rtOk = ok(raw), ok(bw), ok(route)
+        rawOk, bwOk, rtOk, rt2Ok, rt3Ok = ok(raw), ok(bw), ok(route), ok(route2), ok(route3)
         if rc >= 0:
-            nseg += 1; ok_raw += (rawOk == 1); ok_bw += (bwOk == 1); ok_rt += (rtOk == 1)
+            nseg += 1; ok_raw += (rawOk == 1); ok_bw += (bwOk == 1)
+            ok_rt += (rtOk == 1); ok_rt2 += (rt2Ok == 1); ok_rt3 += (rt3Ok == 1)
         parCol[c0:c1 + 1] = pmed; routeCol[c0:c1 + 1] = route
+        routeAgreeCol[c0:c1 + 1] = route2; promAgreeCol[c0:c1 + 1] = route3
         seg_objs.append({"c0": c0, "c1": c1,
                          "par": None if not np.isfinite(pmed) else round(pmed, 1),
                          "route": None if not np.isfinite(route) else round(route, 1),
-                         "src": "BW" if use_bw else "par", "rawOk": rawOk, "bwOk": bwOk, "rtOk": rtOk})
+                         "route2": None if not np.isfinite(route2) else round(route2, 1),
+                         "route3": None if not np.isfinite(route3) else round(route3, 1),
+                         "src": "BW" if use_bw else "par",
+                         "rawOk": rawOk, "bwOk": bwOk, "rtOk": rtOk, "rt2Ok": rt2Ok, "rt3Ok": rt3Ok})
 
     if os.environ.get("RF_DEBUG"):
-        print("\n  seg  t0     ref   raw    bw    par  route  | rawOk bwOk rtOk  src")
+        print("\n  seg  t0     ref    bw    par  route  agree  | bwOk rtOk raOk  src  | all-params")
         for i, s in enumerate(segs):
             o = seg_objs[i]
-            refv = np.interp(s + SEG_SEC / 2 + offset, tat, tar, left=np.nan, right=np.nan)
-            print("  %3d %6.1f %5.1f %5.1f %5.1f %5s %5s  | %5d %4d %4d  %s"
-                  % (i, s, refv, raw_seg[i], bw_seg[i],
+            rmask = (ref_pt >= s + offset) & (ref_pt < s + SEG_SEC + offset)
+            refv = float(np.median(ref_pr[rmask])) if rmask.any() else np.nan
+            allp = allpar_rows[:, i]; allp = allp[np.isfinite(allp)]
+            aps = " ".join("%.0f" % v for v in np.sort(allp))
+            print("  %3d %6.1f %5.1f %5.1f %5s %5s %5s  | %4d %4d %4d  %-3s | %s"
+                  % (i, s, refv, bw_seg[i],
                      ("%.1f" % o["par"]) if o["par"] is not None else "--",
                      ("%.1f" % o["route"]) if o["route"] is not None else "--",
-                     o["rawOk"], o["bwOk"], o["rtOk"], o["src"]))
+                     ("%.1f" % o["route2"]) if o["route2"] is not None else "--",
+                     o["bwOk"], o["rtOk"], o["rt2Ok"], o["src"], aps))
 
     def clean(a):
         return [None if (isinstance(v, float) and np.isnan(v)) else round(float(v), 3) for v in a]
     data = {"rid": rid, "times": np.round(times, 1).tolist(), "freqsBpm": np.round(fbpm, 2).tolist(),
             "heat": [np.round(Pd[:, c], 5).tolist() for c in range(Pd.shape[1])],
             "rawRidge": clean(rawRidge), "bwRidge": clean(bwRidge), "refCol": clean(refCol),
-            "routeCol": clean(routeCol), "parCol": clean(parCol), "segs": seg_objs, "rrEdges": RR_EDGES,
+            "routeCol": clean(routeCol), "routeAgreeCol": clean(routeAgreeCol),
+            "promAgreeCol": clean(promAgreeCol),
+            "parCol": clean(parCol), "segs": seg_objs, "rrEdges": RR_EDGES,
             "loBpm": 0.10 * 60, "hiBpm": 0.80 * 60,
             "accRaw": round(100 * ok_raw / max(1, nseg)), "accBw": round(100 * ok_bw / max(1, nseg)),
-            "accRoute": round(100 * ok_rt / max(1, nseg))}
-    print("  raw=%d%%  BW=%d%%  route_fast=%d%%" % (data["accRaw"], data["accBw"], data["accRoute"]))
-    html = TEMPLATE.replace("__RID__", rid.replace("/", "_")).replace("__DATA__", json.dumps(data))
+            "accRoute": round(100 * ok_rt / max(1, nseg)), "accRouteAgree": round(100 * ok_rt2 / max(1, nseg)),
+            "accPromAgree": round(100 * ok_rt3 / max(1, nseg))}
+    print("  raw=%d%%  BW=%d%%  route_fast=%d%%  route_agree=%d%%  promagree=%d%%"
+          % (data["accRaw"], data["accBw"], data["accRoute"], data["accRouteAgree"], data["accPromAgree"]))
+    html = (TEMPLATE.replace("__RID__", rid.replace("/", "_"))
+                    .replace("__WIN__", "%.0f" % WIN_SEC)
+                    .replace("__SEG__", "%.0f" % SEG_SEC)
+                    .replace("__DATA__", json.dumps(data)))
     os.makedirs(args.out, exist_ok=True)
-    outp = os.path.join(args.out, "routefast_%s.html" % rid.replace("/", "_"))
+    outp = os.path.join(args.out, "routefast_%s_w%.0f_s%.0f.html" % (rid.replace("/", "_"), WIN_SEC, SEG_SEC))
     open(outp, "w", encoding="utf-8").write(html)
     print("  saved ->", outp, "(%.0f KB)" % (len(html) / 1024))
 

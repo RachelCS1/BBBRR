@@ -29,9 +29,9 @@ import numpy as np
 import bw_bp_sweep as S
 
 RR_EDGES = [15.0, 22.0, 30.0]          # 4 category bins
-SEG_SEC = 30.0                          # categorization segment
+SEG_SEC = float(os.environ.get("SEG_SEC", 30.0))   # categorization segment (SEG_SEC=15 to override)
 HOP_SEC = 5.0
-F_LO, F_HI = 0.10, 0.70                 # ridge search band (6-42 bpm)
+F_LO, F_HI = 0.10, 0.80                 # ridge search band (6-48 bpm; winning ceiling)
 WINDOWS = [24.0, 32.0, 40.0, 48.0, 64.0]
 FILTERS = ["raw", "LP0.7", "BP0.05-0.7", "BP0.1-0.7", "BP0.1-1.0"]
 
@@ -84,9 +84,10 @@ def _cat(rr):
     return np.digitize(rr, RR_EDGES)              # 0..3
 
 
-def score_segments(times, rr, tat, tar, offset):
-    """Per 30 s segment: predicted category (majority of ridge) vs reference
-    category. Returns list of (ref_cat, pred_cat)."""
+def score_segments(times, rr, ref_pt, ref_pr, offset):
+    """Per segment: predicted category (majority of ridge) vs reference category.
+    Reference (ground truth) = MEDIAN of all reference breaths inside the segment
+    (average rate), not a center-point sample. Returns list of (ref_cat, pred_cat)."""
     if times.size == 0:
         return []
     t0, t1 = times[0], times[-1]
@@ -100,9 +101,9 @@ def score_segments(times, rr, tat, tar, offset):
         if rseg.size == 0:
             s = e; continue
         pred = int(np.bincount(_cat(rseg), minlength=4).argmax())
-        cen = (s + e) / 2.0
-        ref = np.interp(cen + offset, tat, tar, left=np.nan, right=np.nan)
-        if np.isfinite(ref):
+        rmask = (ref_pt >= s + offset) & (ref_pt < e + offset)
+        if rmask.any():
+            ref = float(np.median(ref_pr[rmask]))
             out.append((int(np.digitize(ref, RR_EDGES)), pred))
         s = e
     return out
@@ -117,19 +118,20 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     from main import run_reference, run_ppg, run_sync
-    from respiration_rr.rr_average import reference_average_rr
+    from respiration_rr.rr_average import reference_rr_points
 
     recs = S.discover(args.data_root)
     if args.limit:
         recs = recs[:args.limit]
-    print("Recordings: %d  channel=%s  band=%.2f-%.2f Hz  hop=%.0fs\n" % (len(recs), args.channel, F_LO, F_HI, HOP_SEC))
+    print("Recordings: %d  channel=%s  band=%.2f-%.2f Hz  seg=%.0fs  hop=%.0fs  ref=segment-median\n"
+          % (len(recs), args.channel, F_LO, F_HI, SEG_SEC, HOP_SEC))
 
     # accumulate confusion per (filter, window): list of (ref,pred) across recordings
     pairs = {(f, w): [] for f in FILTERS for w in WINDOWS}
     for rid, edf, csv in recs:
         try:
             ppg, sig = run_ppg(csv); ref = run_reference(edf); offset = run_sync(edf, ppg, sig)
-            tat, tar = reference_average_rr(ref)
+            ref_pt, ref_pr = reference_rr_points(ref)
             if args.channel not in sig.channels:
                 print("  %-14s SKIP (no channel)" % rid); continue
             x = np.asarray(sig.channels[args.channel], np.float64); fs = float(sig.fs)
@@ -139,7 +141,7 @@ def main(argv=None):
             xf = apply_filter(x, fs, fname)
             for w in WINDOWS:
                 t, rr = stft_ridge(xf, fs, w, HOP_SEC)
-                pairs[(fname, w)].extend(score_segments(t, rr, tat, tar, offset))
+                pairs[(fname, w)].extend(score_segments(t, rr, ref_pt, ref_pr, offset))
         print("  %-14s done" % rid)
 
     # accuracy grid (total) + worst reference-category cell
