@@ -62,6 +62,12 @@ def discover(data_root):
                 edf, csv = _find_inputs(folder)
                 if edf and csv:
                     out.append((f"{os.path.basename(exp)}/{os.path.basename(folder)}", edf, csv))
+    # A rec-id can appear in both "recordings data" and "Test" (e.g. Exp3/001-002). "recordings data"
+    # is scanned first, so keep the FIRST occurrence = the full recording, not the Test copy.
+    dedup = {}
+    for r in out:
+        dedup.setdefault(r[0], r)
+    out = list(dedup.values())
     rf = os.environ.get("REC_FILTER")          # e.g. REC_FILTER=Exp3 or "Exp3/003,Exp3/004"
     if rf:
         subs = [s.strip() for s in rf.split(",") if s.strip()]
