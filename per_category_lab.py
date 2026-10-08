@@ -127,7 +127,7 @@ SHOW_DETREND_PEAKS = False          # per-beat: show the detrend+MAXIMA test cur
 # Rate-aware per-category HIGH-PASS cutoff (Hz) for DETREND_METHOD="hp_percat": remove the
 # baseline BELOW each bin's respiration band (so the slow swing goes, breathing survives).
 # Set safely below the bin's MIN breathing freq (slow can be ~6 bpm=0.1 Hz -> 0.06).
-DETREND_HP_CUTOFF = {0: None, 1: 0.15, 2: 0.15, 3: 0.30}   # <15 (no detrend) / 15-22 / 22-30 / 30+
+DETREND_HP_CUTOFF = {0: None, 1: 0.18, 2: 0.20, 3: 0.30}   # <15 (no detrend) / 15-22 / 22-30 / 30+ (mids: stronger detrend for shallow peaks)
 
 # ---- BW (4th param): band-pass the RAW channel per category, then find peaks ----
 # Each RR bin -> a respiration band (Hz) with a little OVERLAP into the neighbours, so a
@@ -841,6 +841,133 @@ def _plot_channel_bw(rid, ch, raw, t, fs, mr, offset, runs, ref_t, ref_r, result
     return fig
 
 
+def _plot_route_compare(rid, ch, variants, ref_t, ref_r, results, method, bases,
+                        rr_labels, plt, raw, t, fs, offset, bw_only=False):
+    """ONE figure comparing the per-category analysis under each routing side by side:
+    columns = variants (ref / ours), rows = params (detrended per-cat) + a BW row.
+    Each cell overlays the reference RR and that routing's per-category RR, with MAE."""
+    mr = results[ch].move_regions
+    rows = ["BW"] if bw_only else list(bases) + ["BW"]
+    ncol = len(variants)
+    fig, axes = plt.subplots(len(rows), ncol, figsize=(6.6 * ncol, 2.3 * len(rows)),
+                             squeeze=False, sharex=True)
+    for j, (rlab, runs) in enumerate(variants):
+        for i, row in enumerate(rows):
+            ax = axes[i][j]; _shade_runs(ax, runs, rr_labels)
+            ax.plot(ref_t, ref_r, "-", color="#0f172a", lw=1.3, label="reference")
+            if row == "BW":
+                # three BW variants: global whole-band (routing-independent), per-category, hybrid (Artifact only)
+                curves = [("global", bw_whole_band_series(raw, t, fs, mr), "#0891b2"),
+                          ("per-cat", bw_per_category_series(raw, t, fs, mr, runs, offset), "#b45309")]
+                if ch == BW_HI_CHANNEL:
+                    curves.append(("hybrid", bw_artifact_hybrid_series(raw, t, fs, mr, runs, offset), "#7c3aed"))
+                parts = []
+                for lbl, ser, c in curves:
+                    rt_w, rr = ser[3], ser[4]
+                    m, _, _ = _mae_by_category(rt_w, rr, offset, ref_t, ref_r, runs)
+                    ax.plot(rt_w + offset, rr, ".-", color=c, ms=3, lw=0.8, label=f"BW {lbl}")
+                    parts.append(f"{lbl}={m:.2f}")
+                ttl = "BW  " + "  ".join(parts)
+                ax.legend(fontsize=6, loc="upper right", ncol=2)
+            else:
+                gp = results[ch].params.get(row + SUFFIX[method])
+                if gp is None or np.size(gp.series_y) == 0:
+                    ax.set_title(f"{row}/{method}: n/a", fontsize=8); continue
+                sx, sy = np.asarray(gp.series_x), np.asarray(gp.series_y)
+                _, _, _, rt_w, rr = per_category_series(row, method, sx, sy, mr, runs, offset, detrend=True)
+                m, _, _ = _mae_by_category(rt_w, rr, offset, ref_t, ref_r, runs)
+                ax.plot(rt_w + offset, rr, ".-", color="#16a34a", ms=3, lw=0.9, label=f"{row}/{method} per-cat")
+                ttl = f"{row}  MAE={m:.2f}"
+                if i == 0 and j == 0:
+                    ax.legend(fontsize=6, loc="upper right")
+            ax.set_title((f"route={rlab} ({len(runs)} runs) — " if i == 0 else "") + ttl,
+                         fontsize=(10 if i == 0 else 8), fontweight=("bold" if i == 0 else "normal"))
+            if j == 0:
+                ax.set_ylabel(row)
+    fig.suptitle(f"{rid} · {ch} · per-category analysis — reference split vs our split",
+                 fontsize=12, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    return fig
+
+
+def _excess_ridge(freqs, P, topHz, alpha=0.3):
+    """Prominence ridge: subtract a per-column background (median over freq), take the
+    argmax of the EXCESS, and prefer a peak in 30..topHz*60 bpm when a <30 bpm peak won
+    but the fast bump is significant (excess_fast >= alpha*excess_global). This is the
+    winning extraction (see bbbrr-ridge-excess): bw 0.1-0.9, win 24s, hop 5s, alpha 0.3."""
+    from scipy.ndimage import median_filter
+    fb = freqs * 60.0; topb = topHz * 60.0
+    df = (fb[1] - fb[0]) if fb.size > 1 else 2.5
+    K = max(2, int(round(9.0 / df)))
+    n = P.shape[1]
+    E = np.clip(P - median_filter(P, size=(2 * K + 1, 1), mode="nearest"), 0, None)
+    inb = (fb >= 6) & (fb <= topb)
+    if not inb.any():
+        return np.full(n, np.nan)
+    Eb = np.where(inb[:, None], E, -1.0)
+    kAll = np.argmax(Eb, 0); eAll = Eb[kAll, np.arange(n)]; base = fb[kAll]
+    colMax = np.where(inb[:, None], P, 0).max(0)
+    fmask = inb & (fb >= 30)
+    if fmask.any():
+        Ef = np.where(fmask[:, None], E, -1.0); kF = np.argmax(Ef, 0); eF = Ef[kF, np.arange(n)]; fast = fb[kF]
+    else:
+        eF = np.zeros(n); fast = np.full(n, np.nan)
+    promote = (base < 30) & (eAll > 0) & (eF >= alpha * eAll) & (eF >= 0.05 * colMax) & fmask.any()
+    out = np.where(promote, fast, base).astype(float)
+    out[colMax <= 0] = np.nan
+    return out
+
+
+def _agc(x, fs, win_s=4.0):
+    """Rolling-RMS normalization (automatic gain control): divide by the local RMS so a loud
+    stretch doesn't dominate and weak (fast) respiratory stretches are lifted. Helps >30."""
+    from scipy.ndimage import uniform_filter1d
+    rms = np.sqrt(uniform_filter1d(np.asarray(x, float) ** 2, size=max(3, int(win_s * fs)), mode="nearest"))
+    return x / np.maximum(rms, 1e-9)
+
+
+def _temporal_clean(t, rr, dev=0.2, island_s=15.0):
+    """Clean the ridge RR track: (1) snap outliers (>dev from the local moving median) to that
+    median; (2) merge short category-islands (<island_s) into the longer neighbour. Cuts isolated
+    FP spikes and brief spurious category flips."""
+    rr = np.asarray(rr, float).copy(); fin = np.isfinite(rr)
+    if fin.sum() < 3:
+        return rr
+    med = np.array([np.nanmedian(rr[max(0, i - 2):i + 3]) for i in range(len(rr))])
+    bad = fin & np.isfinite(med) & (np.abs(rr - med) / np.maximum(med, 1e-6) > dev)
+    rr[bad] = med[bad]
+    dt = np.median(np.diff(t)) if t.size > 1 else 5.0
+    minc = max(1, int(round(island_s / dt)))
+    cat = np.where(np.isfinite(rr), np.digitize(rr, RR_EDGES), -1)
+    runs = []; i = 0; n = len(cat)
+    while i < n:
+        j = i
+        while j < n and cat[j] == cat[i]:
+            j += 1
+        runs.append([i, j, cat[i]]); i = j
+    for ri, (a, b, c) in enumerate(runs):
+        if c < 0 or (b - a) >= minc:
+            continue
+        nbrs = [runs[ri - 1] if ri > 0 else None, runs[ri + 1] if ri + 1 < len(runs) else None]
+        nbrs = [x for x in nbrs if x and x[2] >= 0]
+        if nbrs:
+            nb = max(nbrs, key=lambda x: x[1] - x[0]); rr[a:b] = np.nanmedian(rr[nb[0]:nb[1]])
+    return rr
+
+
+def _our_rr_curve(sig, win_sec=24.0, hop_sec=5.0, bw_high=0.9, alpha=0.3):
+    """Our winning RR-division curve: Artifact BW (BP 0.1-0.9) -> rolling-RMS AGC -> EXCESS ridge
+    (win 24s / hop 5s, fast-preference alpha 0.3) -> temporal cleanup (despike + short-island merge),
+    on the watch clock. Feeds _segment_by_crossing so routing follows OUR categories."""
+    from scipy.signal import butter, sosfiltfilt
+    from param_category_sweep import stft_power
+    x = np.asarray(sig.channels["Artifact"], np.float64); fs = float(sig.fs)
+    ny = fs / 2.0
+    xbw = sosfiltfilt(butter(2, [0.10 / ny, bw_high / ny], btype="band", output="sos"), x)
+    t, fr, P = stft_power(_agc(xbw, fs), fs, win_sec, hop_sec)
+    return t, _temporal_clean(t, _excess_ridge(fr, P, bw_high, alpha))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Per-category BBBRR lab (spline & ssp & BW)")
     ap.add_argument("--data-root", default=S.DEFAULT_DATA_ROOT)
@@ -862,6 +989,10 @@ def main(argv=None):
                          "(all four params in one display; use with a single per-beat method)")
     ap.add_argument("--params", nargs="+", default=list(BASES))
     ap.add_argument("--min-subseg-sec", type=float, default=MIN_SUBSEG_SEC)
+    ap.add_argument("--route", choices=("ref", "ours", "both"), default="ref",
+                    help="category routing source: ref = reference RR (oracle, default); "
+                         "ours = BW_Artifact ridge (our winning division); "
+                         "both = plot ref AND ours side by side for comparison")
     ap.add_argument("--save", default=None, metavar="DIR")
     ap.add_argument("--no-show", action="store_true")
     args = ap.parse_args(argv)
@@ -872,6 +1003,7 @@ def main(argv=None):
         sys.exit("--edf and --watch must be given together.")
     else:
         recs = S.discover(args.data_root)
+        seen = set(); recs = [r for r in recs if not (r[0] in seen or seen.add(r[0]))]  # dedup id: recordings-data wins over Test
         if args.rec_id:
             recs = [r for r in recs if r[0] == args.rec_id]
         elif not args.all:
@@ -905,18 +1037,42 @@ def main(argv=None):
             offset = run_sync(edf, results, sig)
             truth_at, truth_ar = reference_average_rr(ref)
             hr_t, hr_v = CM.hr_series_from_beats(results, sig, offset)
-            runs = V._segment_by_crossing(truth_at, truth_ar, hr_t, hr_v, args.min_subseg_sec,
-                                          RR_EDGES, CM.HR_EDGES, fill=True)
+            def _runs_from(at, ar):
+                return V._segment_by_crossing(at, ar, hr_t, hr_v, args.min_subseg_sec,
+                                              RR_EDGES, CM.HR_EDGES, fill=True)
+            variants = []                                # (label, runs) per routing to plot
+            if args.route in ("ref", "both"):            # reference RR (oracle)
+                variants.append(("ref", _runs_from(truth_at, truth_ar)))
+            if args.route in ("ours", "both"):           # OUR division (BW_Artifact ridge)
+                our_at, our_ar = _our_rr_curve(sig)
+                our_at = our_at + offset                  # watch clock -> REMbo clock (match HR + reference + runs)
+                variants.append(("ours", _runs_from(our_at, our_ar)))
             ref_t, ref_r = reference_rr_series(ref)
         except Exception as e:
             print(f"  [ERR] {rid}: {e}"); continue
         rr_labels = CM._labels(RR_EDGES, "RR")
         channels = args.channels or [c for c in ("Green", "Red", "IR", "Yellow", "Artifact") if c in results]
-        print(f"\nRecording {rid} | offset {offset:+.2f}s | {len(runs)} category runs | channels {channels}")
+        runs_desc = " | ".join(f"{lab}:{len(rns)} runs" for lab, rns in variants)
+        print(f"\nRecording {rid} | offset {offset:+.2f}s | {runs_desc} | channels {channels}")
         for ch in channels:
             if ch not in results:
                 print(f"  [skip] {ch}: not in results"); continue
             stem = f"pcl_{rid.replace('/', '_')}_{ch}"
+            if args.route == "both":                     # ONE side-by-side comparison figure (ref | ours), incl. BW
+                fig = _plot_route_compare(rid, ch, variants, ref_t, ref_r, results,
+                                          args.methods[0], args.params, rr_labels, plt,
+                                          raw=sig.channels[ch], t=sig.time, fs=sig.fs,
+                                          offset=offset, bw_only=bw_mode)
+                try:
+                    fig.canvas.manager.set_window_title(f"{rid} {ch} ref vs ours")
+                except Exception:
+                    pass
+                if out_dir:
+                    fig.savefig(os.path.join(out_dir, stem + "_compare.png"), dpi=110, bbox_inches="tight")
+                if headless:
+                    plt.close(fig)
+                continue
+            runs = variants[0][1]                        # single routing (ref or ours)
             if bw_mode:
                 fig = _plot_channel_bw(rid, ch, sig.channels[ch], sig.time, sig.fs,
                                        results[ch].move_regions, offset, runs, ref_t, ref_r,
