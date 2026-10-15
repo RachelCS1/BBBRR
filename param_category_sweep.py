@@ -3,7 +3,7 @@
 param_category_sweep.py — workstream C: does a per-beat parameter spectrogram beat
 the Artifact BW for CATEGORIZATION, and which (channel x param x reconstruction)?
 
-For every channel (Green/Red/IR/Artifact), every per-beat parameter (RSA/RIIV/AUC),
+For every channel (Green/Red/IR/Artifact), every per-beat parameter (RSA/AMP/AUC),
 every reconstruction (MA / spline / ssp), we build the envelope exactly as the main
 uniform analysis does, run the SAME winning spectrogram config as the BW baseline
 (exact-length Hann window 48 s, hop 5 s, ridge ceiling 0.80 Hz), and score
@@ -28,7 +28,7 @@ CAT_LABELS = ["<15", "15-22", "22-30", ">30"]
 SEG_SEC, HOP_SEC, F_LO, F_HI, WIN_SEC = 30.0, 5.0, 0.10, 0.80, 48.0
 GRID_FS = 10.0
 CHANNELS = ("Green", "Red", "IR", "Yellow", "Artifact")
-PARAMS = ("RSA", "RIIV", "AUC")
+PARAMS = ("RSA", "AMP", "AUC")
 RECON = ("ma", "spl", "ssp")
 
 

@@ -7,9 +7,9 @@ picture, from raw trace to final respiration rate, in six figure groups:
 
   1. Raw signal                          (original file trace + upsampled channel)
   2. Baseline-corrected signal           (with SS / MSD / SE fiducials marked)
-  3. Per-parameter feature series        (one panel each: RSA, RIIV/AMP, AUC, LP)
+  3. Per-parameter feature series        (one panel each: RSA, AMP, AUC, LP)
   4. Respiration envelopes + BS peaks    (breath-start detection on each envelope)
-  5. Spline vs linear+BP RR              (RSA/RIIV/AUC: RR from each method's peaks)
+  5. Spline vs linear+BP RR              (RSA/AMP/AUC: RR from each method's peaks)
   6. Per-parameter spectrograms          (STFT + respiration ridge, one each)
   7. Final respiration rate (RR)         (bpm from each parameter, overlaid)
 
@@ -60,14 +60,14 @@ CHANNEL_COLUMN = {"Green": "ppg", "Red": "red", "IR": "infra_red",
                   "Yellow": "yellow", "Artifact": "artifact"}
 
 # the four respiration parameters, with human-facing labels + colours
-PARAMS = ("RSA", "RIIV", "AUC", "LP")
+PARAMS = ("RSA", "AMP", "AUC", "LP")
 PARAM_LABEL = {
     "RSA":  "RSA — RR-interval (ms)",
-    "RIIV": "RIIV / AMP — per-beat amplitude",
+    "AMP":  "AMP — per-beat amplitude (max-min)",
     "AUC":  "AUC — per-beat area",
     "LP":   "LP — band-passed trace",
 }
-PARAM_COLORS = {"RSA": "#22c55e", "RIIV": "#38bdf8", "AUC": "#f472b6", "LP": "#f97316"}
+PARAM_COLORS = {"RSA": "#22c55e", "AMP": "#38bdf8", "AUC": "#f472b6", "LP": "#f97316"}
 
 
 # ----------------------------------------------------------------------

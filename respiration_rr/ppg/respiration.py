@@ -6,7 +6,7 @@ rate from four independent per-beat modulation series. Each param also gets its
 own STFT spectrogram + respiration ridge (four spectrograms per channel):
 
   1. RSA  — RR-interval (ms) between consecutive systolic starts   (RSA / RIFV)
-  2. RIIV — per-beat max-height amplitude                          (RIIV / RIAV)
+  2. AMP — per-beat max-height amplitude                          (AMP / RIAV)
   3. AUC  — per-beat area under the baseline-corrected curve
   4. LP   — the raw channel band-passed directly at the RR band
 
@@ -261,7 +261,7 @@ def _breath_starts_raw(sig, fs, prom_frac, t=None, cfg=None, move_regions=None):
     rng = _prominence_range(sig, t, cfg, move_regions) if t is not None else (sig.max() - sig.min())
     global_thr = rng * prom_frac
 
-    # optional BW-only local-relative check (dedicated knobs, independent of RSA/RIIV/AUC)
+    # optional BW-only local-relative check (dedicated knobs, independent of RSA/AMP/AUC)
     if cfg is not None:
         w = getattr(cfg, "bw_local_prom_win_sec", None)
         local_frac = getattr(cfg, "bw_local_prom_frac", None)
@@ -321,7 +321,7 @@ def _noise_flag_from_regions(t, move_regions):
 
 @dataclass
 class RRParam:
-    name: str                       # "RSA" | "RIIV" | "AUC" | "LP"
+    name: str                       # "RSA" | "AMP" | "AUC" | "LP"
     series_x: np.ndarray            # per-beat feature time
     series_y: np.ndarray            # per-beat feature value (or full-rate trace for LP)
     env_x: np.ndarray               # band-passed envelope time
@@ -417,13 +417,13 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
         rsa_x.append(t[i1]); rsa_y.append(rr_ms)
     params["RSA"] = _make_param("RSA", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom, move_regions)
 
-    # ---- Param 2: RIIV (per-beat max height) ----
-    params["RIIV"] = _make_param("RIIV", sa.maxht_x, sa.maxht_y, cfg, prom, move_regions)
+    # ---- Param 2: AMP (per-beat max height) ----
+    params["AMP"] = _make_param("AMP", sa.maxht_x, sa.maxht_y, cfg, prom, move_regions)
 
     # ---- Param 3: AUC (per-beat area) ----
     params["AUC"] = _make_param("AUC", sa.auc_x, sa.auc_y, cfg, prom, move_regions)
 
-    # ---- Spline variants of RSA/RIIV/AUC (comparison alternatives) ----
+    # ---- Spline variants of RSA/AMP/AUC (comparison alternatives) ----
     # Same per-beat source series and same breath-start/RR logic as the linear
     # params; only the envelope construction differs. Additive only.
     prom_spl = getattr(cfg, "rr_spline_prominence", None)
@@ -434,7 +434,7 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
     # (a) interpolating cubic spline (passes through every point, NO band-pass)
     if getattr(cfg, "rr_spline_enabled", False):
         params["RSA_spline"] = _make_param_spline("RSA_spline", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom_spl, val, move_regions)
-        params["RIIV_spline"] = _make_param_spline("RIIV_spline", sa.maxht_x, sa.maxht_y, cfg, prom_spl, val, move_regions)
+        params["AMP_spline"] = _make_param_spline("AMP_spline", sa.maxht_x, sa.maxht_y, cfg, prom_spl, val, move_regions)
         params["AUC_spline"] = _make_param_spline("AUC_spline", sa.auc_x, sa.auc_y, cfg, prom_spl, val, move_regions)
 
     # (b) smoothing spline (penalized fit: denoises the beat-to-beat jitter but
@@ -446,7 +446,7 @@ def analyze_ppg_channel(signal, t, fs, channel="Green", cfg=PPG,
         if prom_ssp is None:                       # fall back to the spline prominence
             prom_ssp = prom_spl
         params["RSA_ssp"] = _make_param_ssp("RSA_ssp", np.asarray(rsa_x), np.asarray(rsa_y), cfg, prom_ssp, val, lam, cut, move_regions)
-        params["RIIV_ssp"] = _make_param_ssp("RIIV_ssp", sa.maxht_x, sa.maxht_y, cfg, prom_ssp, val, lam, cut, move_regions)
+        params["AMP_ssp"] = _make_param_ssp("AMP_ssp", sa.maxht_x, sa.maxht_y, cfg, prom_ssp, val, lam, cut, move_regions)
         params["AUC_ssp"] = _make_param_ssp("AUC_ssp", sa.auc_x, sa.auc_y, cfg, prom_ssp, val, lam, cut, move_regions)
 
     # ---- Param 4: LP/BW (raw channel band-passed at its OWN band, full rate) ----
@@ -548,7 +548,7 @@ def _rr_gate_args(cfg, move_regions):
 
 
 def _make_param(name, x, y, cfg, prom, move_regions=None):
-    """Build an RRParam for the resampled-envelope path (RSA/RIIV/AUC)."""
+    """Build an RRParam for the resampled-envelope path (RSA/AMP/AUC)."""
     env_x, env_y = bp_rr_series(x, y, cfg.rr_band_low_hz, cfg.rr_band_high_hz, cfg.rr_filter_order)
     bs = _breath_starts_envelope(env_x, env_y, prom, cfg=cfg, move_regions=move_regions) if env_y.size else np.array([], int)
     bs_t = env_x[bs] if bs.size else np.zeros(0)
@@ -558,7 +558,7 @@ def _make_param(name, x, y, cfg, prom, move_regions=None):
 
 
 def _make_param_spline(name, x, y, cfg, prom, use_valleys=False, move_regions=None):
-    """Build an RRParam via the cubic-spline envelope path (RSA/RIIV/AUC variant).
+    """Build an RRParam via the cubic-spline envelope path (RSA/AMP/AUC variant).
 
     Identical to _make_param except the envelope is a cubic spline through the
     per-beat series (cubic_spline_rr_series) instead of linear-interp + band-pass.
@@ -579,7 +579,7 @@ def _make_param_spline(name, x, y, cfg, prom, use_valleys=False, move_regions=No
 
 def _make_param_ssp(name, x, y, cfg, prom, use_valleys=False, lam=None, cutoff_hz=None,
                     move_regions=None):
-    """Build an RRParam via the SMOOTHING-spline envelope path (RSA/RIIV/AUC).
+    """Build an RRParam via the SMOOTHING-spline envelope path (RSA/AMP/AUC).
 
     Same breath-start + RR logic as _make_param_spline, but the envelope is a
     penalized smoothing spline (smoothing_spline_rr_series) so the beat-to-beat
@@ -600,7 +600,7 @@ def _make_param_ssp(name, x, y, cfg, prom, use_valleys=False, lam=None, cutoff_h
 def _add_param_spectrogram(p, cfg):
     """Attach an STFT spectrogram + respiration ridge to one RRParam, in place.
 
-    RSA/RIIV/AUC envelopes already live on the 10 Hz RR grid. LP is a full-rate
+    RSA/AMP/AUC envelopes already live on the 10 Hz RR grid. LP is a full-rate
     band-passed trace, so it is resampled onto that same grid first for a
     comparable spectrogram. The ridge search spans the respiration band
     (rr_band_low_hz..rr_band_high_hz) — not the degenerate rr_spec_* pair.

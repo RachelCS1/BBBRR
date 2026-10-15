@@ -10,14 +10,14 @@ Matplotlib figures mirroring the HTML tools' graphs.
 import numpy as np
 import matplotlib.pyplot as plt
 
-_PARAM_COLORS = {"RSA": "#22c55e", "RIIV": "#38bdf8", "AUC": "#f472b6",
+_PARAM_COLORS = {"RSA": "#22c55e", "AMP": "#38bdf8", "AUC": "#f472b6",
                  "LP": "#f97316", "BWlegacy": "#e11d48", "BWbank": "#14b8a6",
                  "Ridge": "#a855f7",
                  # cubic-spline variants (darker shade of each base param)
-                 "RSA_spline": "#15803d", "RIIV_spline": "#0369a1",
+                 "RSA_spline": "#15803d", "AMP_spline": "#0369a1",
                  "AUC_spline": "#be185d",
                  # smoothing-spline variants (distinct third shade)
-                 "RSA_ssp": "#65a30d", "RIIV_ssp": "#0891b2",
+                 "RSA_ssp": "#65a30d", "AMP_ssp": "#0891b2",
                  "AUC_ssp": "#db2777"}
 
 
@@ -100,7 +100,7 @@ def plot_ppg_channel(res, title=None, mae_by_param=None):
     mae_by_param : optional {param_name: (mae, n)} to annotate each panel with its
     own MAE vs the reference (from compare.mae_by_candidate, filtered to this channel).
     """
-    params = [p for p in ("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp",
+    params = [p for p in ("RSA", "RSA_spline", "RSA_ssp", "AMP", "AMP_spline", "AMP_ssp",
                           "AUC", "AUC_spline", "AUC_ssp", "LP")  # PARKED: "BWlegacy", "BWbank"
               if p in res.params]
     n = len(params)
@@ -141,7 +141,7 @@ def plot_ppg_channel(res, title=None, mae_by_param=None):
 
 
 def plot_spline_comparison(res, title=None, window=None, mae_by_param=None):
-    """Per parameter (RSA / RIIV / AUC): overlay the final respiration-rate (RR)
+    """Per parameter (RSA / AMP / AUC): overlay the final respiration-rate (RR)
     curve from each interpolation method's detected peaks:
       - linear+BP  (original: linear interp + band-pass)
       - spline     (interpolating cubic spline, no band-pass)
@@ -152,7 +152,7 @@ def plot_spline_comparison(res, title=None, window=None, mae_by_param=None):
     peaks — the graph that relies on the peaks each method found.
     mae_by_param : optional {param_name: (mae, n)} to annotate each line's MAE.
     """
-    bases = [b for b in ("RSA", "RIIV", "AUC")
+    bases = [b for b in ("RSA", "AMP", "AUC")
              if b in res.params and any(f"{b}_{v}" in res.params
                                         for v in ("spline", "ssp"))]
     if not bases:
@@ -197,11 +197,11 @@ def plot_spline_comparison(res, title=None, window=None, mae_by_param=None):
 
 def plot_ppg_spectrograms(res, title=None, max_bpm=54):
     """One PPG channel: the STFT spectrogram of EACH of the four RR parameters
-    (RSA/RIIV/AUC/LP), with the extracted respiration ridge overlaid.
+    (RSA/AMP/AUC/LP), with the extracted respiration ridge overlaid.
 
     Mirrors the HTML's RR-envelope spectrogram, but per parameter — four panels,
     frequency (bpm) on the y-axis, power (dB) as colour, time on the x-axis."""
-    params = [p for p in ("RSA", "RSA_spline", "RSA_ssp", "RIIV", "RIIV_spline", "RIIV_ssp",
+    params = [p for p in ("RSA", "RSA_spline", "RSA_ssp", "AMP", "AMP_spline", "AMP_ssp",
                           "AUC", "AUC_spline", "AUC_ssp", "LP")
               if p in res.params and res.params[p].spect is not None]
     if not params:
@@ -240,9 +240,9 @@ def plot_ppg_spectrograms(res, title=None, max_bpm=54):
 def plot_ppg_overview(ppg_results):
     """Grouped bar chart: mean RR per parameter for each channel."""
     channels = list(ppg_results)
-    params = ["RSA", "RIIV", "AUC", "LP"]
-    for sp in ("RSA_spline", "RIIV_spline", "AUC_spline",
-               "RSA_ssp", "RIIV_ssp", "AUC_ssp"):                     # only when produced
+    params = ["RSA", "AMP", "AUC", "LP"]
+    for sp in ("RSA_spline", "AMP_spline", "AUC_spline",
+               "RSA_ssp", "AMP_ssp", "AUC_ssp"):                     # only when produced
         if any(sp in ppg_results[ch].params for ch in channels):
             params.append(sp)
     # PARKED (BW-extraction rework): BWlegacy / BWbank appends removed from the

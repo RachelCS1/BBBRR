@@ -3,7 +3,7 @@
 envelope_lab — a standalone lab for the RESPIRATION-ENVELOPE step.
 
 Does NOT touch the shipped pipeline. It runs the real analysis (analyze_ppg) only
-to obtain each parameter's raw per-beat feature series (RSA / RIIV / AUC), then
+to obtain each parameter's raw per-beat feature series (RSA / AMP / AUC), then
 REPLACES the envelope-construction step (normally bp_rr_series' moving-average
 band-pass) with a set of alternative methods, and re-runs breath-start (BS) peak
 detection on each — so you can compare which envelope method yields the best RR.
@@ -34,7 +34,7 @@ Usage
     py envelope_lab.py --recording "Data/Exp1/recordings data/003"
     py envelope_lab.py --watch path/to/rt_flow.csv
     py envelope_lab.py --root "Data/Exp1/recordings data"   # batch: every sub-folder
-    py envelope_lab.py --channels Green --params RIIV        # narrow down
+    py envelope_lab.py --channels Green --params AMP        # narrow down
     py envelope_lab.py --methods ma_bandpass savgol ssa      # pick methods
     py envelope_lab.py --prominence 0.05                     # BS prominence (fraction of range)
     py envelope_lab.py --save figs_env --no-show             # save PNGs, no windows
@@ -66,7 +66,7 @@ DEFAULT_RECORDING = os.path.join(
 
 CHANNEL_COLORS = {"Green": "#22c55e", "Red": "#ef4444",
                   "IR": "#a855f7", "Yellow": "#eab308", "Artifact": "#38bdf8"}
-ENV_PARAMS = ("RSA", "RIIV", "AUC")     # the per-beat-series envelope params
+ENV_PARAMS = ("RSA", "AMP", "AUC")     # the per-beat-series envelope params
 
 # per-method tuning constants (edit here to explore; prominence is on the CLI)
 SAVGOL_SEC = 1.5        # Savitzky-Golay window length (s)
@@ -390,7 +390,7 @@ def main(argv=None):
                     help="batch: process every sub-folder that holds an rt_flow*.csv")
     ap.add_argument("--channels", nargs="+", default=list(CHANNEL_COLORS))
     ap.add_argument("--params", nargs="+", default=list(ENV_PARAMS),
-                    help="which envelope params to test (RSA RIIV AUC)")
+                    help="which envelope params to test (RSA AMP AUC)")
     ap.add_argument("--methods", nargs="+", default=DEFAULT_METHODS,
                     choices=list(METHODS), metavar="M",
                     help=f"methods to compare (default: {' '.join(DEFAULT_METHODS)}; "

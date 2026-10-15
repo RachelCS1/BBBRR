@@ -86,7 +86,7 @@ def run_ppg(csv_path):
     print(f"  {watch['fs']:.0f} Hz -> {PPG.target_fs:.0f} Hz, {sig.time[-1]-sig.time[0]:.0f}s | "
           f"channels {list(results)} | movement regions {len(sig.move_regions)}")
     print("  mean RR (bpm) by parameter:")
-    cols = ["RSA", "RIIV", "AUC", "LP"]
+    cols = ["RSA", "AMP", "AUC", "LP"]
     if any("BWlegacy" in r.params for r in results.values()):   # only when enabled/produced
         cols.append("BWlegacy")
     if any("BWbank" in r.params for r in results.values()):     # only when enabled/produced

@@ -14,7 +14,7 @@ For each breathing scenario it writes a folder containing:
                       Realistic cardiac pulse train (systolic peak + dicrotic notch)
                       modulated by respiration through ALL FOUR parameters at once:
                         - RSA  : heart-rate varies with the breath
-                        - RIIV : pulse amplitude varies with the breath
+                        - AMP : pulse amplitude varies with the breath
                         - AUC  : pulse area varies with the breath (follows amplitude)
                         - BW   : baseline wander at the respiration frequency
                       Accelerometer is near-flat -> no movement/noise regions (clean).
@@ -59,10 +59,10 @@ FS_ACT     = 1.0          # EDF activity rate
 FS_FINE    = 512.0        # fine grid for phase integration
 HR0        = 72.0         # baseline heart rate (bpm)
 RSA_BPM    = 4.0          # heart-rate swing with respiration (RSA depth, bpm)
-RIIV_DEPTH = 0.08         # pulse-amplitude modulation depth (fraction)
+AMP_DEPTH = 0.08         # pulse-amplitude modulation depth (fraction)
 BW_FRAC    = 0.18         # baseline-wander amplitude as fraction of pulse AC
                           # (kept modest: a large baseline leaks into the per-beat
-                          #  amplitude series and corrupts the RIIV estimator)
+                          #  amplitude series and corrupts the AMP estimator)
 SEED       = 12345
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -154,12 +154,12 @@ def optical_channel(t_out, t_fine, phi_resp, theta, dc, ac, bw_amp, noise_std, r
     Raw sensor polarity: pulses deflect DOWN at systole (reflectance PPG), so the
     analyzer's sign-inversion (settings.invert_ppg=True) turns them upright.
       raw = DC  - A(t)*pulse(u)  + baseline_wander(t) + noise
-      A(t) modulated by respiration (RIIV/AUC), baseline_wander at f_resp (BW/LP).
+      A(t) modulated by respiration (AMP/AUC), baseline_wander at f_resp (BW/LP).
     """
     phr = phi_at(t_out, t_fine, phi_resp)
     th = np.interp(t_out, t_fine, theta)
     u = np.mod(th, 2.0 * np.pi) / (2.0 * np.pi)
-    amp = ac * (1.0 + RIIV_DEPTH * np.sin(phr))         # RIIV + AUC modulation
+    amp = ac * (1.0 + AMP_DEPTH * np.sin(phr))         # AMP + AUC modulation
     baseline = bw_amp * np.sin(phr)                     # BW / LP modulation
     sig = dc - amp * ppg_pulse(u) + baseline
     if noise_std > 0:

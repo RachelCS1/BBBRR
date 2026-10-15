@@ -3,7 +3,7 @@
 route_threshold_sweep.py — tune the route_fast threshold.
 
 route_fast: per 30 s segment, if the BW estimate >= TAU use the BW (fast regime it
-alone can see), else use median(IR RSA/RIIV/AUC spline) (slow regime, where the
+alone can see), else use median(IR RSA/AMP/AUC spline) (slow regime, where the
 per-beat params are clean and valid). The 22-30 dip in the fixed-28 version was
 because ~27-30 bpm sits at the params' HR/2 edge -> routing there to params hurt.
 Sweep TAU to find the balance. Config = winner (BW BP0.1-1.0 full rate, window 48 s,
@@ -23,7 +23,7 @@ from param_category_sweep import (stft_power, ridge_rr, envelope_on_grid,
                                   RR_EDGES, SEG_SEC, HOP_SEC, WIN_SEC, GRID_FS)
 from param_fusion_sweep import seg_medians
 
-PARAM_CH, RECON, PARAMS = "IR", "spl", ("RSA", "RIIV", "AUC")
+PARAM_CH, RECON, PARAMS = "IR", "spl", ("RSA", "AMP", "AUC")
 TAUS = [0.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 30.0, 999.0]   # 0=all BW, 999=all params
 
 

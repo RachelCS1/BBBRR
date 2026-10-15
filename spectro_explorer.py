@@ -6,7 +6,7 @@ spectrogram with the reference RR and the strongest-frequency (ridge) drawn on i
 Pick, from one dropdown, any of ~25 spectrograms and view it large:
   1. RAW   — the unfiltered channel               (Green/Red/IR/Yellow/Artifact)
   2. BW    — the channel band-passed 0.1-1.0 Hz    (same 5 channels)
-  3. PARAM — per-beat RSA / AMP(RIIV) / AUC envelope, SPLINE reconstruction from
+  3. PARAM — per-beat RSA / AMP / AUC envelope, SPLINE reconstruction from
              the MAIN pipeline (cubic_spline_rr_series @ 10 Hz), before per-category
              analysis                              (5 channels x 3 params = 15)
 
@@ -29,8 +29,8 @@ from param_category_sweep import stft_power, ridge_rr, envelope_on_grid, GRID_FS
 
 OUT_DEFAULT = r"C:\Users\RACHEL~1\AppData\Local\Temp\claude\C--Users-RachelMizrahi-OneDrive---CardiacSense-Documents-GitHub-BBBRR\3bbdb805-5d0d-4f52-b50c-def0402d0def\scratchpad"
 CHANNELS = ("Green", "Red", "IR", "Yellow", "Artifact")
-PARAMS = ("RSA", "RIIV", "AUC")            # RIIV shown as "AMP (RIIV)"
-PARAM_LABEL = {"RSA": "RSA", "RIIV": "AMP (RIIV)", "AUC": "AUC"}
+PARAMS = ("RSA", "AMP", "AUC")            # AMP = per-beat amplitude (max-min); code key was "RIIV"
+PARAM_LABEL = {"RSA": "RSA", "AMP": "AMP", "AUC": "AUC"}
 RECON = "spl"                               # spline — the main uniform analysis
 HOP_SEC = 5.0
 F_HI_DISP = 1.15                            # display up to ~69 bpm
@@ -107,6 +107,21 @@ def main():
         "ptR": [round(float(v), 2) for v in pr],
     }
 
+    # heart rate over time from the GREEN LED beats, on the WATCH clock (same x-axis as the spectrogram)
+    hr = {"t": [], "v": []}
+    try:
+        res = ppg_res.get("Green")
+        if res is not None and len(getattr(res, "ss_idx", []) or []) > 3:
+            bt = np.asarray(sig.time)[np.asarray(res.ss_idx, int)]     # watch clock (no offset)
+            dt = np.diff(bt); ok = dt > 0
+            hrv = 60.0 / dt[ok]; ht = ((bt[:-1] + bt[1:]) / 2)[ok]
+            good = (hrv >= 35) & (hrv <= 180)
+            hr = {"t": np.round(ht[good], 2).tolist(), "v": np.round(hrv[good], 1).tolist()}
+        else:
+            print("  [warn] HR: Green LED has too few beats")
+    except Exception as e:
+        print("  [warn] HR series skipped (%s)" % e)
+
     signals = []
     for c in CHANNELS:
         x = np.asarray(sig.channels[c], np.float64)
@@ -136,7 +151,7 @@ def main():
             "windows": [int(w) if float(w).is_integer() else w for w in windows],
             "hops": [int(h) if float(h).is_integer() else h for h in hops],
             "topBpm": round(args.bw_high * 60.0, 1),      # excess-ridge search cap = BW band-pass top
-            "reference": reference, "signals": signals}
+            "reference": reference, "hr": hr, "signals": signals}
     html = (TEMPLATE.replace("__RID__", rid.replace("/", "_"))
                     .replace("__DATA__", json.dumps(data)))
     os.makedirs(args.out, exist_ok=True)
@@ -199,6 +214,11 @@ TEMPLATE = r"""<title>Spectrogram explorer — __RID__</title>
       <span>heat = power, dB (global, 60 dB range)</span>
       <span>hover the spectrogram to read its spectrum below</span>
     </div>
+  </div>
+  <div class="panel">
+    <h2>heart rate (bpm) over time</h2>
+    <canvas id="hrcv"></canvas>
+    <div class="leg"><span><i style="background:#f472b6"></i>HR per-beat (bpm), same time axis as the spectrogram</span></div>
   </div>
   <div class="panel">
     <h2 id="spectitle">spectrum @ cursor</h2>
@@ -295,6 +315,7 @@ function col255(v){v=Math.max(0,Math.min(1,v));const x=v*(CM.length-1),i=Math.fl
 
 const cv=document.getElementById('cv'),cx=cv.getContext('2d');
 const sc=document.getElementById('spec'),sx=sc.getContext('2d');
+const hc=document.getElementById('hrcv'),hx=hc.getContext('2d');
 const M={l:52,r:14,t:10,b:34}, YMAX=69;         // bpm axis top
 const BC=['rgba(96,165,250,.12)','rgba(52,211,153,.12)','rgba(245,158,11,.12)','rgba(244,114,182,.12)'];
 let G={};                                        // cached render state for cheap cursor moves
@@ -344,7 +365,7 @@ function render(){
   const TX=v=>x0+(x1-x0)*(v-t0)/(t1-t0||1);
   const BY=v=>y0+(y1-y0)*(v/YMAX);
   const cw=(x1-x0)/t.length;
-  G.x0=x0;G.x1=x1;G.cw=cw;G.dpr=dpr;
+  G.x0=x0;G.x1=x1;G.cw=cw;G.dpr=dpr;G.t0=t0;G.t1=t1;
   // heatmap (scaled from offscreen)
   cx.fillStyle='#05070c';cx.fillRect(x0,y1,x1-x0,y0-y1);
   cx.imageSmoothingEnabled=true;
@@ -375,6 +396,37 @@ function render(){
   const cxpos=x0+cw*(curCol+0.5);
   cx.strokeStyle='rgba(255,255,255,.85)';cx.lineWidth=1.2;cx.beginPath();cx.moveTo(cxpos,y1);cx.lineTo(cxpos,y0);cx.stroke();
   drawSpec();
+  drawHR();
+}
+
+// heart-rate strip: same time axis (G.t0..G.t1) as the spectrogram above
+function drawHR(){
+  const dpr=window.devicePixelRatio||1, W=hc.clientWidth, H=210;
+  hc.width=W*dpr;hc.height=H*dpr;hx.setTransform(dpr,0,0,dpr,0,0);hx.clearRect(0,0,W,H);
+  const x0=M.l,x1=W-M.r,y0=H-24,y1=10, t0=G.t0,t1=G.t1;
+  const hr=D.hr||{t:[],v:[]};
+  hx.fillStyle='#05070c';hx.fillRect(x0,y1,x1-x0,y0-y1);
+  if(!hr.t.length){hx.fillStyle='#8ba0ba';hx.font='12px monospace';hx.fillText('no HR data',x0+10,(y0+y1)/2);return;}
+  // zoomed y-range: robust 3rd..97th percentile (ignore stray beats), tight padding, clamp 30..180
+  const sorted=hr.v.slice().sort((a,b)=>a-b), q=p=>sorted[Math.min(sorted.length-1,Math.max(0,Math.round(p*(sorted.length-1))))];
+  let lo=q(0.03), hiv=q(0.97), pad=Math.max(3,(hiv-lo)*0.12);
+  lo=Math.max(30,Math.floor((lo-pad)/2)*2); hiv=Math.min(180,Math.ceil((hiv+pad)/2)*2); if(hiv-lo<8)hiv=lo+8;
+  const TX=v=>x0+(x1-x0)*(v-t0)/((t1-t0)||1), HY=v=>y0+(y1-y0)*(v-lo)/((hiv-lo)||1);
+  // y ticks
+  hx.fillStyle='rgba(230,238,248,.7)';hx.font='11px monospace';hx.strokeStyle='rgba(230,238,248,.15)';hx.lineWidth=1;
+  for(let g=0;g<=3;g++){const v=lo+(hiv-lo)*g/3;hx.beginPath();hx.moveTo(x0,HY(v));hx.lineTo(x1,HY(v));hx.stroke();hx.fillText(Math.round(v),6,HY(v)+3);}
+  hx.fillText('bpm',6,y1+2);
+  // x ticks (same as spectrogram)
+  const span=t1-t0,step=span>500?120:(span>250?60:30);
+  for(let tt=Math.ceil(t0/step)*step;tt<=t1;tt+=step)hx.fillText(tt+'s',TX(tt)-8,y0+16);
+  // HR line (clamp to the panel so a stray fast/slow beat doesn't shoot off the zoomed range)
+  const clampY=y=>Math.max(y1,Math.min(y0,y));
+  hx.strokeStyle='#f472b6';hx.lineWidth=1.6;hx.beginPath();let pen=false;
+  for(let i=0;i<hr.t.length;i++){const tp=hr.t[i];if(tp<t0||tp>t1){pen=false;continue;}const X=TX(tp),Y=clampY(HY(hr.v[i]));if(!pen){hx.moveTo(X,Y);pen=true;}else hx.lineTo(X,Y);}
+  hx.stroke();
+  // cursor aligned with the spectrogram
+  if(G.t&&G.t.length){const cxpos=x0+((x1-x0)*(G.t[curCol]-t0)/((t1-t0)||1));
+    hx.strokeStyle='rgba(255,255,255,.7)';hx.lineWidth=1;hx.beginPath();hx.moveTo(cxpos,y1);hx.lineTo(cxpos,y0);hx.stroke();}
 }
 
 // spectrum of the current column

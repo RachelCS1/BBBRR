@@ -16,7 +16,7 @@ with `README.md` (quick start) and `respiration_rr/settings.py` (all knobs).
                       ┌─────────────────────────────────────────────┐   ┌──────────────┐
    Watch CSV  ───────▶│ PPG PIPELINE  (respiration_rr.ppg)           │──▶│ COMPARISON   │
    (ppg/red/ir/       │   resample→FFT×4→1024Hz → beats → systolic →  │   │ (…compare)   │
-    artifact/acc)     │   4 params (RSA/RIIV/AUC/LP) + spectral ridge │──▶│ rank by MAE  │
+    artifact/acc)     │   4 params (RSA/AMP/AUC/LP) + spectral ridge │──▶│ rank by MAE  │
                       └─────────────────────────────────────────────┘   └──────────────┘
                                           │                                     │
                                           ▼                                     ▼
@@ -63,7 +63,7 @@ analyze_ppg(channels, time, fs)              → { "IR": PPGChannelResult, "Gree
         │     build 4 params → bp_rr_series → breath-starts → RR
         │     compute_spectrogram + ridge_rr
         ▼
-PPGChannelResult → .params{"RSA","RIIV","AUC","LP"}→RRParam, .ridge_rr, .ss_idx, …
+PPGChannelResult → .params{"RSA","AMP","AUC","LP"}→RRParam, .ridge_rr, .ss_idx, …
 ```
 
 ### Time sync (IR-PPG MSD) — `respiration_rr/sync.py`

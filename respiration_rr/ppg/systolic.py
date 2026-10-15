@@ -133,7 +133,7 @@ def compute_systolic_analysis(bc, t, beat_indices, fs, min_msd_ms=40.0, msd_min_
             auc = 0.0
         auc_x.append(t[i0]); auc_y.append(auc)
 
-    # ---- max-height per beat (RIIV / amplitude) ----
+    # ---- max-height per beat (AMP / amplitude; physiologically RIAV) ----
     maxht_x, maxht_y = [], []
     for k in range(len(ss_idx) - 1):
         i0, i1 = ss_idx[k], ss_idx[k + 1]

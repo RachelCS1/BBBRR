@@ -9,7 +9,7 @@ It is applied to every watch per-beat series individually, so per channel
 (wavelength) you get all THREE parameters in all THREE methods = 9 averaged
 curves:
 
-    parameter : RSA (pulse) · RIIV (amplitude) · AUC (area)
+    parameter : RSA (pulse) · AMP (amplitude) · AUC (area)
     method    : source (linear+BP) · spline (cubic) · ssp (smoothing spline)
 
 and to the REMbo reference's single per-breath RR series (one averaged curve),
@@ -28,10 +28,10 @@ import numpy as np
 from .settings import PPG
 
 # The three per-beat base parameters and the three envelope methods.
-PER_BEAT_BASE = ("RSA", "RIIV", "AUC")
+PER_BEAT_BASE = ("RSA", "AMP", "AUC")
 METHOD_SUFFIXES = ("", "_spline", "_ssp")
 
-PARAM_LABEL = {"RSA": "Pulse (RSA)", "RIIV": "Amplitude (RIIV)", "AUC": "Area (AUC)"}
+PARAM_LABEL = {"RSA": "Pulse (RSA)", "AMP": "Amplitude (AMP)", "AUC": "Area (AUC)"}
 METHOD_LABEL = {"": "source", "_spline": "spline", "_ssp": "ssp"}
 
 

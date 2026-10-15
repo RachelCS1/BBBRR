@@ -6,7 +6,7 @@ avg_rr_compare.py — averaged RR (watch) vs averaged RR (reference).
 channel (wavelength) it is applied to every per-beat series individually, so you
 get all THREE parameters in all THREE methods = 9 averaged curves per channel:
 
-    parameter : RSA (pulse) · RIIV (amplitude) · AUC (area)
+    parameter : RSA (pulse) · AMP (amplitude) · AUC (area)
     method    : source (linear+BP) · spline (cubic) · ssp (smoothing spline)
 
 One figure per channel, 3 panels (one per parameter); each panel overlays the 3

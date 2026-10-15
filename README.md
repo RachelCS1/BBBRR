@@ -36,7 +36,7 @@ For each PPG channel, RR is derived from four independent per-beat modulation
 series (`respiration_rr/ppg/respiration.py`):
 
 1. **RSA**  — RR-interval (ms) between systolic starts (respiratory sinus arrhythmia)
-2. **RIIV** — per-beat max-height amplitude
+2. **AMP** — per-beat max-height amplitude (max − min; physiologically RIAV. Formerly keyed "RIIV")
 3. **AUC**  — per-beat area under the baseline-corrected curve
 4. **LP**   — the raw channel band-passed directly at the respiration band
 

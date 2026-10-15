@@ -160,9 +160,9 @@ class PPGSettings:
     co_window_sec: float = 60.0     # not in UI: CO = sum of SV over trailing 60 s
 
     # ---- Respiration: the FOUR parameters + spectral ridge (bpRRSeries) ----
-    rr_params: tuple = ("RSA", "RIIV", "AUC", "LP")   # (labels; not a UI control)
+    rr_params: tuple = ("RSA", "AMP", "AUC", "LP")   # (labels; not a UI control)
     # Cubic-spline RR variant (comparison alternative to linear-interp + BP):
-    # when True, RSA/RIIV/AUC each get a second parameter ("*_spline") whose
+    # when True, RSA/AMP/AUC each get a second parameter ("*_spline") whose
     # envelope is a cubic spline through the per-beat series with NO band-pass,
     # so the spline method can be compared head-to-head with the existing
     # linear-interp+band-pass envelope. The original params are untouched.
@@ -180,7 +180,7 @@ class PPGSettings:
     # Smoothing-spline RR variant (THIRD approach): a penalized spline that
     # denoises the beat-to-beat jitter WITHOUT a band-pass — less information
     # loss than linear+BP, cleaner than the interpolating spline. Adds "*_ssp"
-    # params (RSA_ssp/RIIV_ssp/AUC_ssp). Reuses rr_spline_prominence and
+    # params (RSA_ssp/AMP_ssp/AUC_ssp). Reuses rr_spline_prominence and
     # rr_spline_use_valleys for peak detection.
     rr_ssp_enabled: bool = True
     # Smoothing strength, expressed as an effective -3 dB CUTOFF in Hz (intuitive
@@ -205,7 +205,7 @@ class PPGSettings:
     # None/0 for global-only prominence (original behaviour).
     rr_local_prom_win_sec: float = 4.0   # local window (s); None/0 -> global only
     rr_local_prom_frac: float = 0.2      # local-relative fraction f_l; None/0 -> global only
-    # ---- Noise-region gating on the FINAL RR (RSA/RIIV/AUC[/spline/ssp] + LP) ----
+    # ---- Noise-region gating on the FINAL RR (RSA/AMP/AUC[/spline/ssp] + LP) ----
     # In a movement/noise region the beats are dropped, so the per-beat series has
     # a hole that the envelope (linear+BP / cubic spline / smoothing spline) then
     # silently interpolates across. A breath-start straddling that gap emits a
@@ -245,7 +245,7 @@ class PPGSettings:
     # median of the points inside — a temporal smoothing of ONE series (it does
     # NOT pool series together). Applied to every watch per-beat series on its
     # own, so per channel you get all 3 params x 3 methods = 9 averaged curves
-    # (RSA/RIIV/AUC x source/spline/ssp; LP/BWlegacy/BWbank excluded), and to the
+    # (RSA/AMP/AUC x source/spline/ssp; LP/BWlegacy/BWbank excluded), and to the
     # REMbo reference's single per-breath series — same knobs, so the two are
     # averaged identically and stay comparable. See respiration_rr/rr_average.py.
     # INDEPENDENT of the reference MAE30 aggregation in reference/airflow.py (that
@@ -266,18 +266,18 @@ class PPGSettings:
     rr_spec_high_hz: float = 0.1           # "Spect Min Freq (Hz)"  (paramSpectMinFreq)
 
     # ---- BW (baseline-wander) parameter — its OWN band on the raw signal ----
-    # RSA/RIIV/AUC use rr_band_* above (per-beat series). BW band-passes the raw
+    # RSA/AMP/AUC use rr_band_* above (per-beat series). BW band-passes the raw
     # channel directly, so it gets independent cutoffs — tune these separately.
     bw_band_low_hz: float = 0.1    # BW high-pass (raw signal)
     bw_band_high_hz: float = 1.0   # BW low-pass (raw signal); 1.0 Hz = 60 bpm.
     bw_filter_order: int = 2        # BW filter order
     # Separate breath-start prominence for the LP/BW param only. None -> reuse
-    # breath_start_prominence (so RSA/RIIV/AUC are untouched). Set a value to tune
+    # breath_start_prominence (so RSA/AMP/AUC are untouched). Set a value to tune
     # the BW peak detector independently of the beat-dependent params.
     bw_prominence: float = 0.01    # 1% of the (robust IQR) amplitude range; was the
                                    # shared 0.001 floor -> stricter breath peaks.
     # Optional LOCAL prominence for the BW param only (mirrors rr_local_prom_* but
-    # dedicated, so it stays independent of RSA/RIIV/AUC). Both None -> global floor
+    # dedicated, so it stays independent of RSA/AMP/AUC). Both None -> global floor
     # only (current behaviour). When both set, a BW peak must ALSO clear
     # bw_local_prom_frac * (local max-min in a +-bw_local_prom_win_sec window).
     bw_local_prom_win_sec: float = 4.0   # +-window (s) for the BW local range; mirrors

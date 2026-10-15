@@ -3,7 +3,7 @@
 route_fast_explorer.py — interactive HTML comparing, per recording:
   * Artifact RAW      (no band-pass) argmax ridge
   * Artifact BW       (BP 0.1-1.0)   argmax ridge
-  * route_fast        (BW if >=22 bpm else median IR RSA/RIIV/AUC spline)
+  * route_fast        (BW if >=22 bpm else median IR RSA/AMP/AUC spline)
 against the reference. Shows the raw Artifact spectrogram, RR over time (all three
 + reference + params-median), and THREE category-match strips so you see which
 segments each method gets right.
@@ -26,7 +26,7 @@ from param_category_sweep import (stft_power, ridge_rr, envelope_on_grid,
 from param_fusion_sweep import seg_medians
 
 OUT_DEFAULT = r"C:\Users\RACHEL~1\AppData\Local\Temp\claude\C--Users-RachelMizrahi-OneDrive---CardiacSense-Documents-GitHub-BBBRR\3bbdb805-5d0d-4f52-b50c-def0402d0def\scratchpad"
-PARAM_CH, RECON, PARAMS = "IR", "spl", ("RSA", "RIIV", "AUC")
+PARAM_CH, RECON, PARAMS = "IR", "spl", ("RSA", "AMP", "AUC")
 F_HI_DISP = 1.05
 TAU = 22.0
 ALL_CHANNELS = ("Green", "Red", "IR", "Yellow", "Artifact")   # pool for majority-agreement
@@ -84,7 +84,7 @@ TEMPLATE = r"""<title>Artifact raw vs BW vs route_fast — __RID__</title>
 </style>
 <div class="wrap">
   <h1>Artifact raw vs BW vs route_fast · <span id="rid"></span></h1>
-  <div class="sub">RAW (no band-pass) · BW (BP 0.1-1.0) · route_fast (BW if &ge;22 bpm else median IR RSA/RIIV/AUC spline) · window __WIN__ s · segment __SEG__ s · ref = segment-median RR · categories &lt;15 / 15-22 / 22-30 / &gt;30</div>
+  <div class="sub">RAW (no band-pass) · BW (BP 0.1-1.0) · route_fast (BW if &ge;22 bpm else median IR RSA/AMP/AUC spline) · window __WIN__ s · segment __SEG__ s · ref = segment-median RR · categories &lt;15 / 15-22 / 22-30 / &gt;30</div>
   <div class="scores">
     <div class="s rw">Artifact raw: <b id="accraw">–</b>%</div>
     <div class="s bw">Artifact BW: <b id="accbw">–</b>%</div>

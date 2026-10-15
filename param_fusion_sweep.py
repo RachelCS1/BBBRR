@@ -5,7 +5,7 @@ BW) beat any single one for categorization?
 
 Per 30 s segment we get a median RR from each source, then test fusion rules and
 score categorization accuracy (total + the weak >30 cell) vs the Artifact-BW
-baseline. Sources: Artifact BW (continuous, sees fast) + IR RSA/RIIV/AUC (spline
+baseline. Sources: Artifact BW (continuous, sees fast) + IR RSA/AMP/AUC (spline
 reconstruction; per-beat -> blind above ~HR/2). Config = the winner: exact Hann
 window 48 s, hop 5 s, ridge ceiling 0.80 Hz.
 
@@ -34,7 +34,7 @@ from param_category_sweep import (stft_power, ridge_rr, envelope_on_grid,
 
 PARAM_CH = "IR"
 RECON = "spl"
-PARAMS = ("RSA", "RIIV", "AUC")
+PARAMS = ("RSA", "AMP", "AUC")
 FAST_TH = 28.0                     # route_fast: BW>=this -> use BW
 
 

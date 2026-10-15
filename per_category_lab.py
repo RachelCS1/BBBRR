@@ -4,7 +4,7 @@ per_category_lab.py — per-category BBBRR analysis lab (spline & ssp), read-onl
 
 Compares the EXISTING per-beat analysis (global settings) against a PER-CATEGORY
 variant of the SAME analysis, for the two spline-family methods (spline, ssp) on
-the three per-beat params (RSA/RIIV/AUC), across all channels. The goal is to see
+the three per-beat params (RSA/AMP/AUC), across all channels. The goal is to see
 whether category-specific settings improve breath-by-breath RR (BBBRR).
 
 Nothing here touches the pipeline. Category-specific settings are LOCAL copies via
@@ -57,7 +57,7 @@ from respiration_rr.settings import PPG
 # PER-CATEGORY OVERRIDES — keyed by RR bin (0 = <15 slow, 1 = 15-30 middle, 2 = 30+ fast).
 # Empty {} => use global PPG for that bin. Each override replaces a settings.PPG field on a
 # LOCAL copy (dataclasses.replace) — the shared PPG is never mutated. These affect the SPLINE
-# and SSP envelope + peak detection (RSA/RIIV/AUC); BW has its own BW_CAT_BAND.
+# and SSP envelope + peak detection (RSA/AMP/AUC); BW has its own BW_CAT_BAND.
 # ----------------------------------------------------------------------------
 PER_CATEGORY_OVERRIDES = {
     # ssp SMOOTHING LEVEL per segment: cutoff just above the bin's max respiration
@@ -204,7 +204,7 @@ def _detrend_lower_env(x, y):
     return y - base
 
 SUFFIX = {"spline": "_spline", "ssp": "_ssp"}
-BASES = ("RSA", "RIIV", "AUC")
+BASES = ("RSA", "AMP", "AUC")
 MIN_SUBSEG_SEC = 8.0                       # matches the final split decision
 RR_BAND_COLORS = ["#dbeafe", "#dcfce7", "#fef9c3", "#fee2e2"]   # RR bin backgrounds (<15 / 15-22 / 22-30 / 30+)
 
@@ -955,10 +955,12 @@ def _temporal_clean(t, rr, dev=0.2, island_s=15.0):
     return rr
 
 
-def _our_rr_curve(sig, win_sec=24.0, hop_sec=5.0, bw_high=0.9, alpha=0.3):
+def _our_rr_curve(sig, win_sec=24.0, hop_sec=5.0, bw_high=0.9, alpha=0.25):
     """Our winning RR-division curve: Artifact BW (BP 0.1-0.9) -> rolling-RMS AGC -> EXCESS ridge
-    (win 24s / hop 5s, fast-preference alpha 0.3) -> temporal cleanup (despike + short-island merge),
-    on the watch clock. Feeds _segment_by_crossing so routing follows OUR categories."""
+    (win 24s / hop 5s, fast-preference alpha 0.25) -> temporal cleanup (despike + short-island merge),
+    on the watch clock. Feeds _segment_by_crossing so routing follows OUR categories.
+    alpha=0.25 (was 0.3): best single global value over Exp3 (84.7% vs 84.2%); per-recording oracle
+    ceiling is only ~86%, so a fixed 0.25 captures nearly all the available headroom."""
     from scipy.signal import butter, sosfiltfilt
     from param_category_sweep import stft_power
     x = np.asarray(sig.channels["Artifact"], np.float64); fs = float(sig.fs)

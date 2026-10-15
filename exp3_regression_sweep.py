@@ -20,7 +20,7 @@ import bw_bp_sweep as S
 from param_category_sweep import stft_power, ridge_rr, envelope_on_grid, GRID_FS
 
 CHANNELS = ("Green", "Red", "IR", "Yellow", "Artifact")
-PARAMS = (("RSA", "RSA"), ("RIIV", "AMP"), ("AUC", "AUC"))
+PARAMS = (("RSA", "RSA"), ("AMP", "AMP"), ("AUC", "AUC"))
 LO, HI = 0.10, 0.80
 EDGES = [15.0, 22.0, 30.0]; LAB = ["<15", "15-22", "22-30", ">30"]
 SEGS = [10.0, 15.0, 20.0, 30.0]

@@ -2,7 +2,7 @@
 """
 consensus_fusion_sweep.py — the user's consensus/disagreement idea for categorization.
 
-Per 30 s segment, pool many RR estimates: the 3 per-beat params (RSA/RIIV/AUC) from
+Per 30 s segment, pool many RR estimates: the 3 per-beat params (RSA/AMP/AUC) from
 EVERY channel (Green/Red/IR/Yellow/Artifact), spline reconstruction, PLUS the Artifact
 BW. Then:
   * slow/mid regime -> take the CONSENSUS (median of the pool = the most-agreed value);
@@ -34,7 +34,7 @@ from param_category_sweep import (stft_power, ridge_rr, envelope_on_grid,
 from param_fusion_sweep import seg_medians
 
 CHANNELS = ("Green", "Red", "IR", "Yellow", "Artifact")
-PARAMS = ("RSA", "RIIV", "AUC")
+PARAMS = ("RSA", "AMP", "AUC")
 RECON = "spl"
 ROUTE_TAU = 22.0                 # route_fast threshold (reference method)
 SPREAD_TAUS = [3.0, 5.0, 7.0, 10.0]   # MAD (bpm) thresholds for the disagreement router

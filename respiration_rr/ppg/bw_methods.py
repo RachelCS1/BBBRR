@@ -258,7 +258,7 @@ def mapas_ref(art, refs, fs, low, high, win_sec=8.0, min_hr=0.625, max_hr=3.5, r
 
       stage 1  fit a sin/cos DICTIONARY over the HR band [min_hr:res:max_hr] to
                each reference LED  ->  reconstructs that LED's cardiac content
-               (in-band only, so the LED's own respiration/RIIV is NOT dragged in);
+               (in-band only, so the LED's own respiration is NOT dragged in);
       stage 2  fit the reconstructed cardiac set to ART                  ->
                cardiac-as-it-appears-on-ART; subtract it from ART.
 
