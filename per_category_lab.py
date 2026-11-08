@@ -79,6 +79,7 @@ PER_CATEGORY_SPLINE_BP = {}
 # and is untouched). Override-dict keys map 0=<edge0, 1..=mids, last=>=edge[-1].
 # Middle split at 22: bins 1 (15-22) and 2 (22-30) share settings, differ ONLY in rate-gate spacing.
 RR_EDGES = [15.0, 22.0, 30.0]      # <15 slow / 15-22 mid-low / 22-30 mid-high / 30+ fast
+                                   # override at runtime with --rr-edges (e.g. --rr-edges 12 20 30)
 
 # ---- Rate-gate (THIRD graph) — use the category as a RATE prior on peak SPACING ----
 # For each breath, its category gives a rate range -> an inter-breath INTERVAL range.
@@ -95,12 +96,57 @@ RATE_GATE_LOCAL_WIN_SEC = 4.0       # window (s) for "prominence relative to sur
                                     # choosing which of two too-close peaks survives
 
 
+# Per-bin RAW rate-gate range override (bin index -> (lo_bpm, hi_bpm)), bypassing the
+# edge-derived range in _bin_rate_range. Set by --merge-mid so a merged middle bin can be
+# gated like one of its old halves (mid-low 15-22 vs mid-high 22-30) even though the CATEGORY
+# now spans the union. Empty = every bin uses its own edge-derived range.
+RATE_RANGE_OVERRIDE = {}
+
+
 def _bin_rate_range(rb):
-    """Widened [lo, hi] bpm for RR bin rb (from RR_EDGES + margin, clamped)."""
-    lo = RATE_FLOOR_BPM if rb == 0 else RR_EDGES[rb - 1]
-    hi = RR_EDGES[rb] if rb < len(RR_EDGES) else RATE_CEIL_BPM
+    """Widened [lo, hi] bpm for RR bin rb (RATE_RANGE_OVERRIDE if set, else RR_EDGES; +margin, clamped)."""
+    if int(rb) in RATE_RANGE_OVERRIDE:
+        lo, hi = RATE_RANGE_OVERRIDE[int(rb)]
+    else:
+        lo = RATE_FLOOR_BPM if rb == 0 else RR_EDGES[rb - 1]
+        hi = RR_EDGES[rb] if rb < len(RR_EDGES) else RATE_CEIL_BPM
     return (max(RATE_FLOOR_BPM, lo - RATE_GATE_MARGIN_BPM),
             min(RATE_CEIL_BPM, hi + RATE_GATE_MARGIN_BPM))
+
+
+def merge_middle_bins(which="low"):
+    """Collapse the two MIDDLE RR bins into one (4 categories -> 3) by dropping the central edge.
+    E.g. RR_EDGES [15,22,30] (<15 / 15-22 / 22-30 / 30+) -> [15,30] (<15 / 15-30 / 30+).
+    `which` picks how the merged middle is ANALYSED:
+      'low'  = inherit the old mid-low bin's overrides + rate-gate range (~15-22),
+      'high' = inherit the old mid-high bin's overrides + rate-gate range (~22-30).
+    The merged CATEGORY still spans the union (15-30) for binning; only its detection profile
+    and rate-gate follow the chosen half. Slow (first) and fast (last) bins keep their own
+    profiles. Mutates RR_EDGES, PER_CATEGORY_OVERRIDES, RATE_RANGE_OVERRIDE in place; no-op if
+    there are fewer than 4 bins."""
+    global RR_EDGES, PER_CATEGORY_OVERRIDES, RATE_RANGE_OVERRIDE
+    if len(RR_EDGES) < 3:                        # need >=4 bins (>=3 edges) to have two middles
+        return
+    which = str(which).lower()
+    if which not in ("low", "high"):
+        raise ValueError("merge_middle_bins: which must be 'low' or 'high'")
+    old = dict(PER_CATEGORY_OVERRIDES)
+    e = RR_EDGES
+    mid = len(e) // 2                             # central edge index to drop ([15,22,30]: ->1)
+    src_mid = mid if which == "low" else mid + 1  # which old bin feeds the merged middle
+    # raw rate-gate range of the chosen old half (from the ORIGINAL edges, before truncation)
+    if which == "low":
+        rng = (RATE_FLOOR_BPM if mid - 1 < 0 else e[mid - 1], e[mid])
+    else:
+        rng = (e[mid], RATE_CEIL_BPM if mid + 1 >= len(e) else e[mid + 1])
+    RR_EDGES = e[:mid] + e[mid + 1:]
+    new = {}
+    for b in range(len(RR_EDGES) + 1):            # new bins 0..len(edges)
+        if b < mid:      new[b] = old.get(b, {})
+        elif b == mid:   new[b] = old.get(src_mid, {})
+        else:            new[b] = old.get(b + 1, {})   # bins after the merge shift down by one
+    PER_CATEGORY_OVERRIDES = new
+    RATE_RANGE_OVERRIDE = {mid: rng}              # merged middle gates like its chosen half
 
 
 # ---- Detrend (THIRD graph): remove the envelope midline before peak detection ----
@@ -890,11 +936,14 @@ def _plot_route_compare(rid, ch, variants, ref_t, ref_r, results, method, bases,
     return fig
 
 
-def _excess_ridge(freqs, P, topHz, alpha=0.3):
+def _excess_ridge(freqs, P, topHz, alpha=0.3, subharm=True, beta=0.5):
     """Prominence ridge: subtract a per-column background (median over freq), take the
     argmax of the EXCESS, and prefer a peak in 30..topHz*60 bpm when a <30 bpm peak won
     but the fast bump is significant (excess_fast >= alpha*excess_global). This is the
-    winning extraction (see bbbrr-ridge-excess): bw 0.1-0.9, win 24s, hop 5s, alpha 0.3."""
+    winning extraction (see bbbrr-ridge-excess): bw 0.1-0.9, win 24s, hop 5s, alpha 0.25.
+    subharm: SUB-HARMONIC GUARD — if the chosen low bump f0 (<24 bpm) has a harmonic 2*f0 or
+    3*f0 (<=topb) with excess >= beta*excess(f0), switch to it (the low is a sub-harmonic of a
+    real fast breath). Safe (0 false fast on Exp3) and recovers a few 30+-read-as-<15 cases."""
     from scipy.ndimage import median_filter
     fb = freqs * 60.0; topb = topHz * 60.0
     df = (fb[1] - fb[0]) if fb.size > 1 else 2.5
@@ -914,6 +963,22 @@ def _excess_ridge(freqs, P, topHz, alpha=0.3):
         eF = np.zeros(n); fast = np.full(n, np.nan)
     promote = (base < 30) & (eAll > 0) & (eF >= alpha * eAll) & (eF >= 0.05 * colMax) & fmask.any()
     out = np.where(promote, fast, base).astype(float)
+    if subharm and fmask.any():
+        e0 = np.where(promote, eF, eAll)                     # excess of the chosen bump
+        for c in range(n):
+            f0 = out[c]
+            if not np.isfinite(f0) or f0 >= 24.0 or colMax[c] <= 0:
+                continue
+            best_f = None; best_e = 0.0
+            for h in (3, 2):                                 # prefer the higher fundamental first
+                fh = h * f0
+                if fh > topb:
+                    continue
+                b = int(np.argmin(np.abs(fb - fh)))
+                if E[b, c] >= beta * e0[c] and E[b, c] > best_e:
+                    best_e = E[b, c]; best_f = fb[b]
+            if best_f is not None:
+                out[c] = best_f
     out[colMax <= 0] = np.nan
     return out
 
@@ -974,6 +1039,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Per-category BBBRR lab (spline & ssp & BW)")
     ap.add_argument("--data-root", default=S.DEFAULT_DATA_ROOT)
     ap.add_argument("--rec-id", default=None, help="recording id, e.g. Exp2/002 (default: first)")
+    ap.add_argument("--exclude", nargs="+", default=None,
+                    help="recording ids to leave OUT, e.g. --exclude Exp3/011 Exp3/006 "
+                         "(applied to discovery; most useful with --all)")
     ap.add_argument("--edf", default=None,
                     help="explicit reference EDF path (with --watch; bypasses discovery, "
                          "so a recording outside Data/Exp*/recordings data can be analysed)")
@@ -991,6 +1059,13 @@ def main(argv=None):
                          "(all four params in one display; use with a single per-beat method)")
     ap.add_argument("--params", nargs="+", default=list(BASES))
     ap.add_argument("--min-subseg-sec", type=float, default=MIN_SUBSEG_SEC)
+    ap.add_argument("--rr-edges", type=float, nargs="+", default=None,
+                    help="category RR-bin edges in bpm (default 15 22 30 -> <15/15-22/22-30/30+); "
+                         "e.g. --rr-edges 12 20 30")
+    ap.add_argument("--merge-mid", choices=("low", "high"), default=None,
+                    help="collapse the two middle bins into one (4 categories -> 3, e.g. <15/15-30/30+). "
+                         "low = merged middle uses the mid-low detection profile; high = the mid-high one. "
+                         "slow & fast bins keep their own. Applied after --rr-edges.")
     ap.add_argument("--route", choices=("ref", "ours", "both"), default="ref",
                     help="category routing source: ref = reference RR (oracle, default); "
                          "ours = BW_Artifact ridge (our winning division); "
@@ -999,6 +1074,12 @@ def main(argv=None):
     ap.add_argument("--no-show", action="store_true")
     args = ap.parse_args(argv)
 
+    if args.rr_edges:                                    # manual category boundaries
+        global RR_EDGES
+        RR_EDGES = sorted(float(x) for x in args.rr_edges)
+    if args.merge_mid:                                   # 4 categories -> 3 (merge the two middles)
+        merge_middle_bins(args.merge_mid)
+
     if args.edf and args.watch:
         recs = [(args.rec_id or "custom", args.edf, args.watch)]   # direct paths, skip discovery
     elif args.edf or args.watch:
@@ -1006,6 +1087,8 @@ def main(argv=None):
     else:
         recs = S.discover(args.data_root)
         seen = set(); recs = [r for r in recs if not (r[0] in seen or seen.add(r[0]))]  # dedup id: recordings-data wins over Test
+        if args.exclude:                                 # drop user-chosen ids before any selection
+            recs = [r for r in recs if r[0] not in set(args.exclude)]
         if args.rec_id:
             recs = [r for r in recs if r[0] == args.rec_id]
         elif not args.all:
